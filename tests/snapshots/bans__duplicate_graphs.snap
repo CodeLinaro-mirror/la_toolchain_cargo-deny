@@ -1,0 +1,144 @@
+---
+source: tests/bans.rs
+expression: dup_graphs.lock().unwrap()
+---
+[
+    digraph {
+        0 [label="0.10.2", shape=box, style=rounded, color=red]
+        1 [label="0.7.3", shape=box, style=rounded, color=red]
+        2 [label="sha-1 0.8.2", shape=box, style=rounded]
+        3 [label="pest_meta 2.1.3", shape=box, style=rounded]
+        4 [label="pest_generator 2.1.3", shape=box, style=rounded]
+        5 [label="pest_derive 2.1.0", shape=box, style=rounded]
+        6 [label="async-graphql-parser 3.0.38", shape=box, style=rounded]
+        7 [label="async-graphql-derive 3.0.38", shape=box, style=rounded]
+        8 [label="async-graphql 3.0.38", shape=box, style=rounded]
+        9 [label="duplicates 0.1.0", shape=box, style=rounded]
+        10 [label="digest 0.10.3", shape=box, style=rounded]
+        11 [label="sha2 0.10.2", shape=box, style=rounded]
+        12 [label="sqlx-core 0.5.13", shape=box, style=rounded]
+        13 [label="sqlx-macros 0.5.13", shape=box, style=rounded]
+        14 [label="sqlx 0.5.13", shape=box, style=rounded]
+        2 -> 1 []
+        3 -> 2 [label="build"]
+        4 -> 3 []
+        5 -> 4 []
+        6 -> 5 []
+        7 -> 6 []
+        8 -> 6 []
+        9 -> 8 []
+        8 -> 7 []
+        10 -> 0 [color=red]
+        11 -> 10 [color=red]
+        12 -> 11 [color=red]
+        13 -> 12 [color=red]
+        14 -> 12 [color=red]
+        9 -> 14 [color=red]
+        14 -> 13 [color=red]
+        13 -> 11 [color=red]
+        subgraph cluster_0 {
+            {rank=same 0 1 }
+            style="rounded,filled";
+            label="block-buffer"
+        }
+    }
+    ,
+    digraph {
+        0 [label="0.10.3", shape=box, style=rounded, color=red]
+        1 [label="0.8.1", shape=box, style=rounded, color=red]
+        2 [label="sha-1 0.8.2", shape=box, style=rounded]
+        3 [label="pest_meta 2.1.3", shape=box, style=rounded]
+        4 [label="pest_generator 2.1.3", shape=box, style=rounded]
+        5 [label="pest_derive 2.1.0", shape=box, style=rounded]
+        6 [label="async-graphql-parser 3.0.38", shape=box, style=rounded]
+        7 [label="async-graphql-derive 3.0.38", shape=box, style=rounded]
+        8 [label="async-graphql 3.0.38", shape=box, style=rounded]
+        9 [label="duplicates 0.1.0", shape=box, style=rounded]
+        10 [label="sha2 0.10.2", shape=box, style=rounded]
+        11 [label="sqlx-core 0.5.13", shape=box, style=rounded]
+        12 [label="sqlx-macros 0.5.13", shape=box, style=rounded]
+        13 [label="sqlx 0.5.13", shape=box, style=rounded]
+        2 -> 1 []
+        3 -> 2 [label="build"]
+        4 -> 3 []
+        5 -> 4 []
+        6 -> 5 []
+        7 -> 6 []
+        8 -> 6 []
+        9 -> 8 []
+        8 -> 7 []
+        10 -> 0 [color=red]
+        11 -> 10 [color=red]
+        12 -> 11 [color=red]
+        13 -> 11 [color=red]
+        9 -> 13 [color=red]
+        13 -> 12 [color=red]
+        12 -> 10 [color=red]
+        subgraph cluster_0 {
+            {rank=same 0 1 }
+            style="rounded,filled";
+            label="digest"
+        }
+    }
+    ,
+    digraph {
+        0 [label="0.12.4", shape=box, style=rounded, color=red]
+        1 [label="0.14.5", shape=box, style=rounded, color=red]
+        2 [label="0.10.2", shape=box, style=rounded, color=red]
+        3 [label="0.10.3", shape=box, style=rounded, color=red]
+        4 [label="sha2 0.10.2", shape=box, style=rounded]
+        5 [label="sqlx-core 0.5.13", shape=box, style=rounded]
+        6 [label="sqlx-macros 0.5.13", shape=box, style=rounded]
+        7 [label="sqlx 0.5.13", shape=box, style=rounded]
+        8 [label="duplicates 0.1.0", shape=box, style=rounded]
+        9 [label="crypto-common 0.1.3", shape=box, style=rounded]
+        10 [label="0.8.1", shape=box, style=rounded, color=red]
+        11 [label="0.7.3", shape=box, style=rounded, color=red]
+        12 [label="sha-1 0.8.2", shape=box, style=rounded]
+        13 [label="pest_meta 2.1.3", shape=box, style=rounded]
+        14 [label="pest_generator 2.1.3", shape=box, style=rounded]
+        15 [label="pest_derive 2.1.0", shape=box, style=rounded]
+        16 [label="async-graphql-parser 3.0.38", shape=box, style=rounded]
+        17 [label="async-graphql-derive 3.0.38", shape=box, style=rounded]
+        18 [label="async-graphql 3.0.38", shape=box, style=rounded]
+        2 -> 1 [color=red]
+        3 -> 2 [color=red]
+        4 -> 3 [color=red]
+        5 -> 4 [color=red]
+        6 -> 5 [color=red]
+        7 -> 5 [color=red]
+        8 -> 7 [color=red]
+        7 -> 6 [color=red]
+        6 -> 4 [color=red]
+        9 -> 1 [color=red]
+        3 -> 9 [color=red]
+        10 -> 0 [color=blue]
+        11 -> 0 [color=blue]
+        12 -> 11 [color=blue]
+        13 -> 12 [label="build", color=blue]
+        14 -> 13 [color=blue]
+        15 -> 14 [color=blue]
+        16 -> 15 [color=blue]
+        17 -> 16 [color=blue]
+        18 -> 16 [color=blue]
+        8 -> 18 [color=blue]
+        18 -> 17 [color=blue]
+        12 -> 10 [color=blue]
+        subgraph cluster_0 {
+            {rank=same 2 11 }
+            style="rounded";
+            label="block-buffer"
+        }
+        subgraph cluster_1 {
+            {rank=same 3 10 }
+            style="rounded";
+            label="digest"
+        }
+        subgraph cluster_2 {
+            {rank=same 0 1 }
+            style="rounded,filled";
+            label="generic-array"
+        }
+    }
+    ,
+]

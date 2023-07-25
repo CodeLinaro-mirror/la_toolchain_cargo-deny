@@ -1,0 +1,18 @@
+[bans]
+multiple-versions = "allow" # We don't care about these for this example
+
+[[bans.features]]
+name = "reqwest"
+#deny = ["json"]
+allow = [
+    "rustls",
+    "__rustls",
+    "__tls",
+    "hyper-rustls",
+    "rustls",
+    "rustls-pemfile",
+    "rustls-tls-webpki-roots",
+    "tokio-rustls",
+    #"webpki-roots",
+]
+exact = true

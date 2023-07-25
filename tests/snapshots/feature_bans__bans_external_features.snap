@@ -1,0 +1,230 @@
+---
+source: tests/feature_bans.rs
+expression: diags
+---
+[
+  {
+    "fields": {
+      "code": "feature-banned",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "libssh2-sys",
+            "version": "0.2.23"
+          },
+          "parents": [
+            {
+              "Feature": {
+                "crate_name": "libssh2-sys",
+                "name": "zlib-ng-compat"
+              },
+              "parents": [
+                {
+                  "Krate": {
+                    "name": "libgit2-sys",
+                    "version": "0.13.4+1.4.2"
+                  },
+                  "parents": [
+                    {
+                      "Krate": {
+                        "name": "git2",
+                        "version": "0.14.4"
+                      },
+                      "parents": [
+                        {
+                          "Krate": {
+                            "name": "features-galore",
+                            "version": "0.1.0"
+                          },
+                          "parents": [
+                            {
+                              "Feature": {
+                                "crate_name": "features-galore",
+                                "name": "ssh"
+                              }
+                            },
+                            {
+                              "Feature": {
+                                "crate_name": "features-galore",
+                                "name": "zlib"
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "Feature": {
+                            "crate_name": "git2",
+                            "name": "ssh"
+                          },
+                          "parents": [
+                            {
+                              "Krate": {
+                                "name": "features-galore",
+                                "version": "0.1.0"
+                              },
+                              "repeat": true
+                            },
+                            {
+                              "Feature": {
+                                "crate_name": "features-galore",
+                                "name": "ssh"
+                              },
+                              "repeat": true
+                            }
+                          ]
+                        },
+                        {
+                          "Feature": {
+                            "crate_name": "git2",
+                            "name": "ssh_key_from_memory"
+                          },
+                          "parents": [
+                            {
+                              "Krate": {
+                                "name": "features-galore",
+                                "version": "0.1.0"
+                              },
+                              "repeat": true
+                            },
+                            {
+                              "Feature": {
+                                "crate_name": "features-galore",
+                                "name": "ssh"
+                              },
+                              "repeat": true
+                            }
+                          ]
+                        },
+                        {
+                          "Feature": {
+                            "crate_name": "git2",
+                            "name": "zlib-ng-compat"
+                          },
+                          "parents": [
+                            {
+                              "Krate": {
+                                "name": "features-galore",
+                                "version": "0.1.0"
+                              },
+                              "repeat": true
+                            },
+                            {
+                              "Feature": {
+                                "crate_name": "features-galore",
+                                "name": "zlib"
+                              },
+                              "repeat": true
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "Feature": {
+                        "crate_name": "libgit2-sys",
+                        "name": "libssh2-sys"
+                      },
+                      "parents": [
+                        {
+                          "Feature": {
+                            "crate_name": "libgit2-sys",
+                            "name": "ssh"
+                          },
+                          "parents": [
+                            {
+                              "Krate": {
+                                "name": "git2",
+                                "version": "0.14.4"
+                              },
+                              "repeat": true
+                            },
+                            {
+                              "Feature": {
+                                "crate_name": "git2",
+                                "name": "ssh"
+                              },
+                              "repeat": true
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "Feature": {
+                        "crate_name": "libgit2-sys",
+                        "name": "ssh"
+                      },
+                      "repeat": true
+                    },
+                    {
+                      "Feature": {
+                        "crate_name": "libgit2-sys",
+                        "name": "ssh_key_from_memory"
+                      },
+                      "parents": [
+                        {
+                          "Krate": {
+                            "name": "git2",
+                            "version": "0.14.4"
+                          },
+                          "repeat": true
+                        },
+                        {
+                          "Feature": {
+                            "crate_name": "git2",
+                            "name": "ssh_key_from_memory"
+                          },
+                          "repeat": true
+                        }
+                      ]
+                    },
+                    {
+                      "Feature": {
+                        "crate_name": "libgit2-sys",
+                        "name": "zlib-ng-compat"
+                      },
+                      "parents": [
+                        {
+                          "Krate": {
+                            "name": "git2",
+                            "version": "0.14.4"
+                          },
+                          "repeat": true
+                        },
+                        {
+                          "Feature": {
+                            "crate_name": "git2",
+                            "name": "zlib-ng-compat"
+                          },
+                          "repeat": true
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Feature": {
+                    "crate_name": "libgit2-sys",
+                    "name": "zlib-ng-compat"
+                  },
+                  "repeat": true
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "labels": [
+        {
+          "column": 45,
+          "line": 1,
+          "message": "feature denied here",
+          "span": "'zlib-ng-compat'"
+        }
+      ],
+      "message": "feature 'zlib-ng-compat' for crate 'libssh2-sys = 0.2.23' is explicitly denied",
+      "severity": "error"
+    },
+    "type": "diagnostic"
+  }
+]

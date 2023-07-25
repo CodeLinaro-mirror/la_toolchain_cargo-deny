@@ -1,0 +1,107 @@
+[package]
+name = "cargo-deny"
+description = "Cargo plugin to help you manage large dependency graphs"
+repository = "https://github.com/EmbarkStudios/cargo-deny"
+version = "0.13.9"
+authors = [
+  "Embark <opensource@embark-studios.com>",
+  "Jake Shadle <jake.shadle@embark-studios.com>",
+]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/cargo-deny"
+homepage = "https://github.com/EmbarkStudios/cargo-deny"
+categories = ["development-tools::cargo-plugins"]
+keywords = ["cargo", "license", "spdx", "ci", "advisories"]
+exclude = ["examples/", ".github/", "tests"]
+rust-version = "1.65.0"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[[bin]]
+name = "cargo-deny"
+path = "src/cargo-deny/main.rs"
+
+[features]
+default = ["vendored-openssl", "vendored-libgit2"]
+# Allows the use of a vendored version openssl when compiling libgit, which allows
+# us to compile static executables (eg musl) and avoid system dependencies
+vendored-openssl = [
+  "cargo?/vendored-openssl",
+  "crates-index/vendored-openssl",
+  "git2/vendored-openssl",
+]
+vendored-libgit2 = ["cargo?/vendored-libgit2", "git2/vendored-libgit2"]
+# Allows embedding cargo as a library so that we can run in minimal (eg container)
+# environments that don't need to have cargo/rust installed on them for cargo-deny
+# to still function
+standalone = ["cargo"]
+
+[dependencies]
+# Output coloring
+nu-ansi-term = "0.47"
+# Easy errors
+anyhow = "1.0"
+# Used for detecting the license type of a file
+askalono = "0.4"
+# Used to detect if an output stream is a TTY to control default coloring
+is-terminal = "0.4.6"
+# Used to track various things during check runs
+bitvec = { version = "1.0", features = ["alloc"] }
+# Allows us to do eg cargo metadata operations without relying on an external cargo
+cargo = { version = "0.69", optional = true }
+# Argument parsing, kept aligned with cargo
+clap = { version = "4.0", features = ["derive", "env"] }
+# Used for diagnostic reporting
+codespan = "0.11"
+codespan-reporting = "0.11"
+# Fetching and reading of crates.io (or other indices)
+crates-index = { version = "0.19", default-features = false, features = [
+  "parallel",
+] }
+# Brrrrr
+crossbeam = "0.8"
+# Logging utilities
+fern = "0.6"
+# We directly interact with git when doing index operations eg during fix
+git2 = "0.16"
+# We need to figure out HOME/CARGO_HOME in some cases
+home = "0.5"
+# Provides graphs on top of cargo_metadata
+krates = { version = "0.13", features = ["prefer-index", "targets"] }
+# Log macros
+log = "0.4"
+# Moar brrrr
+rayon = "1.4"
+# Used for interacting with advisory databases
+rustsec = { version = "0.26", default-features = false }
+# Parsing and checking of versions/version requirements
+semver = "1.0"
+# Gee what could it be
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Avoid some heap allocations when we likely won't need them
+smallvec = "1.9"
+# Used for parsing and checking SPDX license expressions
+spdx = "0.10"
+# Lazy
+strum = { version = "0.24", features = ["derive"] }
+# Timestamp emission
+time = { version = "0.3", default-features = false, features = [
+  "formatting",
+  "macros",
+] }
+# Deserialization of configuration files and crate manifests
+toml = "0.7"
+# Small fast hash crate
+twox-hash = { version = "1.5", default-features = false }
+# Url parsing/manipulation
+url = "2.1"
+
+[dev-dependencies]
+# Snapshot testing
+insta = { version = "1.21", features = ["json"] }
+# We use this for creating fake crate directories for crawling license files on disk
+tempfile = "3.1.0"
