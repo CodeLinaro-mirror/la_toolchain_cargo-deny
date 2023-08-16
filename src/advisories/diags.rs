@@ -23,6 +23,7 @@ pub enum Code {
     Unsound,
     Yanked,
     IndexFailure,
+    IndexCacheLoadFailure,
     AdvisoryNotDetected,
     UnknownAdvisory,
 }
@@ -126,14 +127,15 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
                 notes.push("Solution: No safe upgrade is available!".to_owned());
             } else {
                 notes.push(format!(
-                    "Solution: Upgrade to {}",
+                    "Solution: Upgrade to {} (try `cargo update -p {}`)",
                     versions
                         .patched()
                         .iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>()
                         .as_slice()
-                        .join(" OR ")
+                        .join(" OR "),
+                    krate.name,
                 ));
             }
         };
@@ -172,7 +174,10 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
         let mut pack = Pack::with_kid(Check::Advisories, krate.id.clone());
         pack.push(
             Diagnostic::new(self.cfg.yanked.value.into())
-                .with_message("detected yanked crate")
+                .with_message(format!(
+                    "detected yanked crate (try `cargo update -p {}`)",
+                    krate.name
+                ))
                 .with_code(Code::Yanked)
                 .with_labels(vec![self
                     .krate_spans
@@ -211,6 +216,17 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
                 .with_notes(vec![error.to_string()]),
         );
         pack
+    }
+
+    pub fn diag_for_index_load_failure(&self, error: impl std::fmt::Display) -> Pack {
+        (
+            Check::Advisories,
+            Diagnostic::new(Severity::Error)
+                .with_message("failed to load index cache")
+                .with_code(Code::IndexCacheLoadFailure)
+                .with_notes(vec![error.to_string()]),
+        )
+            .into()
     }
 
     pub(crate) fn diag_for_advisory_not_encountered(

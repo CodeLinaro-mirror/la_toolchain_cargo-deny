@@ -23,11 +23,10 @@
 
 use crate::{
     diag::{Diagnostic, FileId, Label},
-    LintLevel, Spanned,
+    LintLevel, PathBuf, Spanned,
 };
 use semver::VersionReq;
 use serde::Deserialize;
-use std::path::PathBuf;
 
 const fn confidence_threshold() -> f32 {
     0.8
@@ -43,6 +42,10 @@ pub enum BlanketAgreement {
     Both,
     /// The license can be be either OSI Approved or FSF/Free Libre
     Either,
+    /// The license must be OSI Approved
+    Osi,
+    /// The license must be FSF/Free
+    Fsf,
     /// The license must be OSI Approved but not FSF/Free Libre
     OsiOnly,
     /// The license must be FSF/Free Libre but not OSI Approved
