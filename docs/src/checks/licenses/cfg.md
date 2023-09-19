@@ -41,6 +41,10 @@ allow = [
 ]
 ```
 
+### The `include-dev` field (optional)
+
+If `true`, licenses are checked even for `dev-dependencies`. By default this is false as `dev-dependencies` are not used by downstream crates, nor part of binary artifacts.
+
 ### The `unlicensed` field (optional)
 
 Determines what happens when a crate has not explicitly specified its license terms, and no license information could be confidently detected via `LICENSE*` files in the crate's source.
@@ -100,6 +104,21 @@ The name of the crate that you are adding an exception for
 #### The `exceptions.version` field (optional)
 
 An optional version constraint specifying the range of crate versions you are excepting. Defaults to any version.
+
+### Additional exceptions configuration file
+
+In some cases it's useful to have global cargo-deny config and project-local exceptions. This can be accomplished with a project exceptions file in any of these locations relative to your top level `Cargo.toml` manifest file.
+
+`cargo-deny` will look for the following files: `<cwd>/deny.exceptions.toml`, `<cwd>/.deny.exceptions.toml` and `<cwd>/.cargo/deny.exceptions.toml`
+
+Only the exceptions field should be set:
+
+```ini
+exceptions = [
+    # Each entry is the crate and version constraint, and its specific allow list.
+    { allow = ["CDDL-1.0"], name = "inferno", version = "*" },
+]
+```
 
 #### The `allow` field
 

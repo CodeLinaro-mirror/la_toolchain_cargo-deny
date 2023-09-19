@@ -169,6 +169,10 @@ pub struct Config {
     /// licenses aren't accepted for every possible crate and must be opted into
     #[serde(default)]
     pub exceptions: Vec<Exception>,
+    /// If true, performs license checks for dev-dependencies for workspace
+    /// crates as well
+    #[serde(default)]
+    pub include_dev: bool,
 }
 
 impl Default for Config {
@@ -185,6 +189,31 @@ impl Default for Config {
             allow: Vec::new(),
             clarify: Vec::new(),
             exceptions: Vec::new(),
+            include_dev: false,
+        }
+    }
+}
+
+fn parse_license(
+    ls: &Spanned<String>,
+    v: &mut Vec<Licensee>,
+    diags: &mut Vec<Diagnostic>,
+    cfg_file: FileId,
+) {
+    match spdx::Licensee::parse(ls.as_ref()) {
+        Ok(licensee) => {
+            v.push(Licensee::new(licensee, ls.span.clone()));
+        }
+        Err(pe) => {
+            let offset = ls.span.start + 1;
+            let span = pe.span.start + offset..pe.span.end + offset;
+            diags.push(
+                Diagnostic::error()
+                    .with_message("invalid licensee")
+                    .with_labels(vec![
+                        Label::primary(cfg_file, span).with_message(format!("{}", pe.reason))
+                    ]),
+            );
         }
     }
 }
@@ -197,7 +226,12 @@ impl crate::cfg::UnvalidatedConfig for Config {
     /// 1. Ensures all SPDX identifiers are valid
     /// 1. Ensures all SPDX expressions are valid
     /// 1. Ensures the same license is not both allowed and denied
-    fn validate(self, cfg_file: FileId, diags: &mut Vec<Diagnostic>) -> Self::ValidCfg {
+    fn validate(
+        self,
+        cfg_file: FileId,
+        _files: &mut crate::diag::Files,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Self::ValidCfg {
         use rayon::prelude::*;
 
         let mut ignore_sources = Vec::with_capacity(self.private.ignore_sources.len());
@@ -218,32 +252,14 @@ impl crate::cfg::UnvalidatedConfig for Config {
             }
         }
 
-        let mut parse_license = |ls: &Spanned<String>, v: &mut Vec<Licensee>| {
-            match spdx::Licensee::parse(ls.as_ref()) {
-                Ok(licensee) => {
-                    v.push(Licensee::new(licensee, ls.span.clone()));
-                }
-                Err(pe) => {
-                    let offset = ls.span.start + 1;
-                    let span = pe.span.start + offset..pe.span.end + offset;
-                    diags.push(
-                        Diagnostic::error()
-                            .with_message("invalid licensee")
-                            .with_labels(vec![Label::primary(cfg_file, span)
-                                .with_message(format!("{}", pe.reason))]),
-                    );
-                }
-            }
-        };
-
         let mut denied = Vec::with_capacity(self.deny.len());
         for d in &self.deny {
-            parse_license(d, &mut denied);
+            parse_license(d, &mut denied, diags, cfg_file);
         }
 
         let mut allowed: Vec<Licensee> = Vec::with_capacity(self.allow.len());
         for a in &self.allow {
-            parse_license(a, &mut allowed);
+            parse_license(a, &mut allowed, diags, cfg_file);
         }
 
         denied.par_sort();
@@ -254,13 +270,14 @@ impl crate::cfg::UnvalidatedConfig for Config {
             let mut allowed = Vec::with_capacity(exc.allow.len());
 
             for allow in &exc.allow {
-                parse_license(allow, &mut allowed);
+                parse_license(allow, &mut allowed, diags, cfg_file);
             }
 
             exceptions.push(ValidException {
                 name: exc.name,
                 version: exc.version,
                 allowed,
+                file_id: cfg_file,
             });
         }
 
@@ -294,7 +311,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
                         Diagnostic::error()
                             .with_message("unable to parse license expression")
                             .with_labels(vec![Label::primary(cfg_file, expr_span)
-                                .with_message(format!("{}", err.reason))]),
+                                .with_message(err.reason.to_string())]),
                     );
 
                     continue;
@@ -327,7 +344,63 @@ impl crate::cfg::UnvalidatedConfig for Config {
             denied,
             allowed,
             ignore_sources,
+            include_dev: self.include_dev,
         }
+    }
+}
+
+pub fn load_exceptions(
+    cfg: &mut ValidConfig,
+    path: crate::PathBuf,
+    files: &mut crate::diag::Files,
+    diags: &mut Vec<Diagnostic>,
+) {
+    // TOML can't have unnamed arrays at the root.
+    #[derive(Deserialize)]
+    pub struct ExceptionsConfig {
+        pub exceptions: Vec<Exception>,
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(err) => {
+            diags.push(
+                Diagnostic::error()
+                    .with_message("failed to read exceptions override")
+                    .with_notes(vec![format!("path = '{path}'"), format!("error = {err:#}")]),
+            );
+            return;
+        }
+    };
+
+    let exc_cfg: ExceptionsConfig = match toml::from_str(&content) {
+        Ok(ec) => ec,
+        Err(err) => {
+            diags.push(
+                Diagnostic::error()
+                    .with_message("failed to deserialize exceptions override")
+                    .with_notes(vec![format!("path = '{path}'"), format!("error = {err:#}")]),
+            );
+            return;
+        }
+    };
+
+    let file_id = files.add(path, content);
+
+    cfg.exceptions.reserve(exc_cfg.exceptions.len());
+    for exc in exc_cfg.exceptions {
+        let mut allowed = Vec::with_capacity(exc.allow.len());
+
+        for allow in &exc.allow {
+            parse_license(allow, &mut allowed, diags, file_id);
+        }
+
+        cfg.exceptions.push(ValidException {
+            name: exc.name,
+            version: exc.version,
+            allowed,
+            file_id,
+        });
     }
 }
 
@@ -347,6 +420,7 @@ pub struct ValidException {
     pub name: crate::Spanned<String>,
     pub version: Option<VersionReq>,
     pub allowed: Vec<Licensee>,
+    pub file_id: FileId,
 }
 
 pub type Licensee = Spanned<spdx::Licensee>;
@@ -366,6 +440,7 @@ pub struct ValidConfig {
     pub clarifications: Vec<ValidClarification>,
     pub exceptions: Vec<ValidException>,
     pub ignore_sources: Vec<url::Url>,
+    pub include_dev: bool,
 }
 
 #[cfg(test)]
@@ -381,10 +456,13 @@ mod test {
             licenses: Config,
         }
 
-        let cd: ConfigData<Licenses> = load("tests/cfg/licenses.toml");
+        let mut cd: ConfigData<Licenses> = load("tests/cfg/licenses.toml");
 
         let mut diags = Vec::new();
-        let validated = cd.config.licenses.validate(cd.id, &mut diags);
+        let validated = cd
+            .config
+            .licenses
+            .validate(cd.id, &mut cd.files, &mut diags);
         assert!(diags.is_empty());
 
         assert_eq!(validated.file_id, cd.id);
@@ -415,6 +493,7 @@ mod test {
                 name: "adler32".to_owned().fake(),
                 allowed: vec![spdx::Licensee::parse("Zlib").unwrap().fake()],
                 version: Some(semver::VersionReq::parse("0.1.1").unwrap()),
+                file_id: cd.id,
             }]
         );
         let p: PathBuf = "LICENSE".into();

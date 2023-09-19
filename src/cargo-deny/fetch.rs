@@ -17,10 +17,10 @@ pub struct Args {
     /// Path to the config to use
     ///
     /// Defaults to <cwd>/deny.toml if not specified
-    #[clap(short, long, action)]
+    #[arg(short, long)]
     config: Option<PathBuf>,
     /// The sources to fetch
-    #[clap(value_enum, action)]
+    #[arg(value_enum)]
     sources: Vec<FetchSource>,
 }
 
@@ -66,6 +66,16 @@ impl ValidConfig {
 
         let id = files.add(&cfg_path, cfg_contents);
 
+        let mut diags = Vec::new();
+        let advisories = cfg
+            .advisories
+            .unwrap_or_default()
+            .validate(id, files, &mut diags);
+
+        let has_errors = diags
+            .iter()
+            .any(|d| d.severity >= cargo_deny::diag::Severity::Error);
+
         let print = |diags: Vec<Diagnostic>| {
             if diags.is_empty() {
                 return;
@@ -79,12 +89,6 @@ impl ValidConfig {
             }
         };
 
-        let mut diags = Vec::new();
-        let advisories = cfg.advisories.unwrap_or_default().validate(id, &mut diags);
-
-        let has_errors = diags
-            .iter()
-            .any(|d| d.severity >= cargo_deny::diag::Severity::Error);
         print(diags);
 
         if has_errors {

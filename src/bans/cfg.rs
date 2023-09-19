@@ -85,12 +85,162 @@ impl GraphHighlight {
     }
 }
 
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub struct Checksum(pub [u8; 32]);
+
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub enum ChecksumParseError {
+    /// The checksum string had an invalid length
+    InvalidLength(usize),
+    /// The checksum string contained a non-hex character
+    InvalidValue(char),
+}
+
+impl std::str::FromStr for Checksum {
+    type Err = ChecksumParseError;
+
+    fn from_str(data: &str) -> Result<Self, Self::Err> {
+        if data.len() != 64 {
+            return Err(ChecksumParseError::InvalidLength(data.len()));
+        }
+
+        let mut array = [0u8; 32];
+
+        for (ind, chunk) in data.as_bytes().chunks(2).enumerate() {
+            #[inline]
+            fn parse_hex(b: u8) -> Result<u8, ChecksumParseError> {
+                Ok(match b {
+                    b'A'..=b'F' => b - b'A' + 10,
+                    b'a'..=b'f' => b - b'a' + 10,
+                    b'0'..=b'9' => b - b'0',
+                    c => {
+                        return Err(ChecksumParseError::InvalidValue(c as char));
+                    }
+                })
+            }
+
+            let mut cur = parse_hex(chunk[0])?;
+            cur <<= 4;
+            cur |= parse_hex(chunk[1])?;
+
+            array[ind] = cur;
+        }
+
+        Ok(Self(array))
+    }
+}
+
+impl<'de> Deserialize<'de> for Checksum {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        struct HexStrVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for HexStrVisitor {
+            type Value = Checksum;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "a sha-256 hex encoded string")
+            }
+
+            fn visit_str<E: Error>(self, data: &str) -> Result<Self::Value, E> {
+                data.parse().map_err(|err| match err {
+                    ChecksumParseError::InvalidLength(len) => {
+                        serde::de::Error::invalid_length(len, &"a string with 64 characters")
+                    }
+                    ChecksumParseError::InvalidValue(c) => serde::de::Error::invalid_value(
+                        serde::de::Unexpected::Char(c),
+                        &"a hexadecimal character",
+                    ),
+                })
+            }
+
+            fn visit_borrowed_str<E: Error>(self, data: &'de str) -> Result<Self::Value, E> {
+                self.visit_str(data)
+            }
+        }
+
+        deserializer.deserialize_str(HexStrVisitor)
+    }
+}
+
+#[derive(Deserialize, Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct BypassPath {
+    /// The crate-relative path to the executable
+    pub path: Spanned<crate::PathBuf>,
+    /// An optional sha-256 checksum to ensure that the executable is matched exactly
+    pub checksum: Option<Spanned<Checksum>>,
+}
+
+#[derive(Deserialize, Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct Bypass {
+    pub name: Spanned<String>,
+    pub version: Option<VersionReq>,
+    pub build_script: Option<Spanned<Checksum>>,
+    /// List of features that, if matched, means the build script/proc macro is
+    /// not actually executed/run
+    #[serde(default)]
+    pub required_features: Vec<Spanned<String>>,
+    /// List of glob patterns that are allowed. This is much more loose than
+    /// `allow`, but can be useful in scenarios where things like test suites or
+    /// the like that contain many scripts/test executables that are present in
+    /// the packaged source, but are (hopefully) not actually read or executed
+    /// during builds
+    pub allow_globs: Option<Vec<Spanned<String>>>,
+    /// One or more executables that are allowed. If not set all executables are
+    /// allowed.
+    #[serde(default)]
+    pub allow: Vec<BypassPath>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct BuildConfig {
+    /// List of crates that are allowed to have build scripts. If this is set,
+    /// any crates with a build script that aren't listed here will be banned
+    pub allow_build_scripts: Option<Spanned<Vec<CrateId>>>,
+    /// Lint level for when executables are detected within crates with build
+    /// scripts or are proc macros, or are a dependency of either of them
+    #[serde(default = "crate::lint_deny")]
+    pub executables: LintLevel,
+    /// The lint level for interpreted scripts
+    #[serde(default = "crate::lint_allow")]
+    pub interpreted: LintLevel,
+    /// List of script extensions that are considered to be executable. These
+    /// are always in addition to the builtin ones.
+    pub script_extensions: Option<Vec<Spanned<String>>>,
+    /// The list of allowed executables, by crate
+    pub bypass: Option<Vec<Bypass>>,
+    /// If true, enables the built-in glob patterns
+    #[serde(default)]
+    pub enable_builtin_globs: bool,
+    /// If true, all dependencies of proc macro crates or crates with build
+    /// scripts are also checked for executables/glob patterns
+    #[serde(default)]
+    pub include_dependencies: bool,
+    /// If true, workspace crates are included
+    #[serde(default)]
+    pub include_workspace: bool,
+    /// If true, archive files are counted as native executables
+    #[serde(default)]
+    pub include_archives: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Config {
     /// How to handle multiple versions of the same crate
     #[serde(default = "crate::lint_warn")]
     pub multiple_versions: LintLevel,
+    #[serde(default)]
+    pub multiple_versions_include_dev: bool,
     /// How the duplicate graphs are highlighted
     #[serde(default = "highlight")]
     pub highlight: GraphHighlight,
@@ -129,14 +279,18 @@ pub struct Config {
     /// thus this rule will not effect public packages.
     #[serde(default)]
     pub allow_wildcard_paths: bool,
-    /// List of crates that are allowed to have a build step.
+    /// Deprecated and moved into `build.allow_build_scripts`, will eventually
+    /// be removed
     pub allow_build_scripts: Option<Spanned<Vec<CrateId>>>,
+    /// Options for crates that run at build time
+    pub build: Option<BuildConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             multiple_versions: LintLevel::Warn,
+            multiple_versions_include_dev: false,
             highlight: GraphHighlight::All,
             deny: Vec::new(),
             allow: Vec::new(),
@@ -148,6 +302,7 @@ impl Default for Config {
             wildcards: LintLevel::Allow,
             allow_wildcard_paths: false,
             allow_build_scripts: None,
+            build: None,
         }
     }
 }
@@ -155,7 +310,12 @@ impl Default for Config {
 impl crate::cfg::UnvalidatedConfig for Config {
     type ValidCfg = ValidConfig;
 
-    fn validate(self, cfg_file: FileId, diags: &mut Vec<Diagnostic>) -> Self::ValidCfg {
+    fn validate(
+        self,
+        cfg_file: FileId,
+        files: &mut crate::diag::Files,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Self::ValidCfg {
         let from = |s: Spanned<CrateId>| {
             Skrate::new(
                 KrateId {
@@ -296,9 +456,172 @@ impl crate::cfg::UnvalidatedConfig for Config {
             })
             .collect();
 
+        let build = if let Some(bc) = self.build {
+            // Give higher precedence to the user's extensions
+            let mut gsb = GlobsetBuilder::new();
+            if let Some(extensions) = bc.script_extensions {
+                for ext in extensions {
+                    // This top level config should only be extensions, not glob patterns
+                    if !ext.value.is_ascii() {
+                        diags.push(
+                            Diagnostic::error()
+                                .with_message("non-ascii file extension provided")
+                                .with_labels(vec![Label::primary(cfg_file, ext.span.clone())
+                                    .with_message("invalid extension")]),
+                        );
+                        continue;
+                    }
+
+                    if let Some(i) = ext.value.chars().position(|c| !c.is_ascii_alphanumeric()) {
+                        diags.push(
+                            Diagnostic::error()
+                                .with_message("invalid file extension provided")
+                                .with_labels(vec![
+                                    Label::primary(cfg_file, ext.span.clone())
+                                        .with_message("extension"),
+                                    Label::secondary(
+                                        cfg_file,
+                                        ext.span.start + i..ext.span.start + i + 1,
+                                    )
+                                    .with_message("invalid character"),
+                                ]),
+                        );
+                        continue;
+                    }
+
+                    match globset::Glob::new(&format!("*.{}", ext.value)) {
+                        Ok(glob) => {
+                            gsb.add(glob, GlobPattern::User(ext));
+                        }
+                        Err(err) => {
+                            diags.push(
+                                Diagnostic::error()
+                                    .with_message(format!("invalid glob pattern: {err}"))
+                                    .with_labels(vec![Label::primary(cfg_file, ext.span.clone())
+                                        .with_message("extension")]),
+                            );
+                        }
+                    }
+                }
+            }
+
+            if bc.enable_builtin_globs {
+                load_builtin_globs(files, &mut gsb);
+            }
+
+            let script_extensions = gsb.build().unwrap_or_else(|err| {
+                diags
+                    .push(Diagnostic::error().with_message(format!(
+                        "failed to build script extensions glob set: {err}"
+                    )));
+                ValidGlobSet::default()
+            });
+
+            let bypass = if let Some(aexes) = bc.bypass {
+                let mut aex = Vec::new();
+
+                for aexe in aexes {
+                    let allow_globs = if let Some(allow_globs) = aexe.allow_globs {
+                        let mut gsb = GlobsetBuilder::new();
+
+                        for ag in allow_globs {
+                            match globset::Glob::new(&ag.value) {
+                                Ok(glob) => {
+                                    gsb.add(glob, GlobPattern::User(ag));
+                                }
+                                Err(err) => {
+                                    diags.push(
+                                        Diagnostic::error()
+                                            .with_message(format!("invalid glob pattern: {err}"))
+                                            .with_labels(vec![Label::primary(
+                                                cfg_file,
+                                                ag.span.clone(),
+                                            )]),
+                                    );
+                                }
+                            }
+                        }
+
+                        match gsb.build() {
+                            Ok(set) => Some(set),
+                            Err(err) => {
+                                diags.push(Diagnostic::error().with_message(format!(
+                                    "failed to build script extensions glob set: {err}"
+                                )));
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    let mut allow = aexe.allow;
+                    allow.retain(|ae| {
+                        let keep = ae.path.value.is_relative();
+                        if !keep {
+                            diags.push(
+                                Diagnostic::error()
+                                    .with_message("absolute paths are not allowed")
+                                    .with_labels(vec![Label::primary(
+                                        cfg_file,
+                                        ae.path.span.clone(),
+                                    )]),
+                            );
+                        }
+
+                        keep
+                    });
+                    allow.sort_by(|a, b| a.path.value.cmp(&b.path.value));
+
+                    aex.push(ValidBypass {
+                        name: aexe.name,
+                        version: aexe.version,
+                        build_script: aexe.build_script,
+                        required_features: aexe.required_features,
+                        allow,
+                        allow_globs,
+                    });
+                }
+
+                aex
+            } else {
+                Vec::new()
+            };
+
+            Some(ValidBuildConfig {
+                allow_build_scripts: bc.allow_build_scripts,
+                executables: bc.executables,
+                script_extensions,
+                bypass,
+                include_dependencies: bc.include_dependencies,
+                include_workspace: bc.include_workspace,
+                include_archives: bc.include_archives,
+                interpreted: bc.interpreted,
+            })
+        } else if let Some(allow_build_scripts) = self.allow_build_scripts {
+            diags.push(Diagnostic::warning()
+                .with_message("[bans.allow-build-scripts] has been deprecated in favor of [bans.build.allow-build-scripts], this will become an error in the future")
+                .with_labels(vec![
+                    Label::primary(cfg_file, allow_build_scripts.span.clone())
+                ]));
+            Some(ValidBuildConfig {
+                allow_build_scripts: Some(allow_build_scripts),
+                executables: LintLevel::Allow,
+                script_extensions: ValidGlobSet::default(),
+                bypass: Vec::new(),
+                include_dependencies: false,
+                include_workspace: false,
+                include_archives: false,
+                interpreted: LintLevel::Warn,
+            })
+        } else {
+            None
+        };
+
         ValidConfig {
             file_id: cfg_file,
             multiple_versions: self.multiple_versions,
+            multiple_versions_include_dev: self.multiple_versions_include_dev,
             highlight: self.highlight,
             denied,
             denied_multiple_versions,
@@ -314,19 +637,27 @@ impl crate::cfg::UnvalidatedConfig for Config {
                 .into_iter()
                 .map(crate::Spanned::from)
                 .collect(),
-            allow_build_scripts: self.allow_build_scripts.map(|v| {
-                Spanned::new(
-                    v.value
-                        .into_iter()
-                        .map(|id| KrateId {
-                            name: id.name,
-                            version: id.version,
-                        })
-                        .collect(),
-                    v.span,
-                )
-            }),
+            build,
         }
+    }
+}
+
+fn load_builtin_globs(files: &mut crate::diag::Files, gsb: &mut GlobsetBuilder) {
+    const BUILTIN_GLOBS: &str = include_str!("builtin_globs.toml");
+
+    #[derive(Deserialize)]
+    struct Builtin {
+        globs: Vec<Spanned<String>>,
+    }
+
+    let bi: Builtin = toml::from_str(BUILTIN_GLOBS).expect("failed to parse builtin_globs.toml");
+    let file_id = files.add("builtin_globs.toml", BUILTIN_GLOBS.to_owned());
+
+    for glob in bi.globs {
+        gsb.add(
+            globset::Glob::new(&glob.value).expect("failed to parse builtin glob"),
+            GlobPattern::Builtin((glob, file_id)),
+        );
     }
 }
 
@@ -356,9 +687,91 @@ pub(crate) struct KrateFeatures {
     pub features: Features,
 }
 
+pub enum GlobPattern {
+    Builtin((Spanned<String>, FileId)),
+    User(Spanned<String>),
+}
+
+struct GlobsetBuilder {
+    builder: globset::GlobSetBuilder,
+    patterns: Vec<GlobPattern>,
+}
+
+impl GlobsetBuilder {
+    fn new() -> Self {
+        Self {
+            builder: globset::GlobSetBuilder::new(),
+            patterns: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, glob: globset::Glob, pattern: GlobPattern) {
+        self.builder.add(glob);
+        self.patterns.push(pattern);
+    }
+
+    fn build(self) -> anyhow::Result<ValidGlobSet> {
+        use anyhow::Context as _;
+        let set = self.builder.build().context("unable to build globset")?;
+
+        Ok(ValidGlobSet {
+            set,
+            patterns: self.patterns,
+        })
+    }
+}
+
+pub struct ValidGlobSet {
+    set: globset::GlobSet,
+    /// Patterns in the globset for lint output
+    pub(crate) patterns: Vec<GlobPattern>,
+}
+
+impl Default for ValidGlobSet {
+    fn default() -> Self {
+        Self {
+            set: globset::GlobSet::empty(),
+            patterns: Vec::new(),
+        }
+    }
+}
+
+impl ValidGlobSet {
+    #[inline]
+    pub fn matches(
+        &self,
+        path: &globset::Candidate<'_>,
+        indices: &mut Vec<usize>,
+    ) -> Option<Vec<&GlobPattern>> {
+        self.set.matches_candidate_into(path, indices);
+        (!indices.is_empty()).then(|| indices.iter().map(|i| &self.patterns[*i]).collect())
+    }
+}
+
+pub struct ValidBypass {
+    pub name: Spanned<String>,
+    pub version: Option<VersionReq>,
+    pub build_script: Option<Spanned<Checksum>>,
+    pub required_features: Vec<Spanned<String>>,
+    pub allow_globs: Option<ValidGlobSet>,
+    pub allow: Vec<BypassPath>,
+}
+
+pub struct ValidBuildConfig {
+    pub allow_build_scripts: Option<Spanned<Vec<CrateId>>>,
+    pub executables: LintLevel,
+    pub script_extensions: ValidGlobSet,
+    pub bypass: Vec<ValidBypass>,
+    pub include_dependencies: bool,
+    pub include_workspace: bool,
+    pub include_archives: bool,
+    pub interpreted: LintLevel,
+}
+
 pub struct ValidConfig {
     pub file_id: FileId,
     pub multiple_versions: LintLevel,
+    pub multiple_versions_include_dev: bool,
     pub highlight: GraphHighlight,
     pub(crate) denied: Vec<KrateBan>,
     pub(crate) denied_multiple_versions: Vec<Skrate>,
@@ -370,7 +783,7 @@ pub struct ValidConfig {
     pub(crate) tree_skipped: Vec<Spanned<TreeSkip>>,
     pub wildcards: LintLevel,
     pub allow_wildcard_paths: bool,
-    pub allow_build_scripts: Option<Spanned<Vec<KrateId>>>,
+    pub build: Option<ValidBuildConfig>,
 }
 
 #[cfg(test)]
@@ -408,10 +821,10 @@ mod test {
             bans: Config,
         }
 
-        let cd: ConfigData<Bans> = load("tests/cfg/bans.toml");
+        let mut cd: ConfigData<Bans> = load("tests/cfg/bans.toml");
 
         let mut diags = Vec::new();
-        let validated = cd.config.bans.validate(cd.id, &mut diags);
+        let validated = cd.config.bans.validate(cd.id, &mut cd.files, &mut diags);
         assert!(diags.is_empty());
 
         assert_eq!(validated.file_id, cd.id);
@@ -459,5 +872,57 @@ mod test {
         assert_eq!(kf.features.deny[0].value, "bad-feature");
         assert_eq!(kf.features.allow.value[0].value, "good-feature");
         assert!(kf.features.exact.value);
+
+        let mut bc = validated.build.expect("expected build config");
+        assert_eq!(
+            bc.allow_build_scripts.unwrap().value.pop().unwrap().name,
+            "all-versionsa"
+        );
+        assert_eq!(bc.executables, LintLevel::Warn);
+        assert_eq!(bc.interpreted, LintLevel::Deny);
+
+        assert!(bc.script_extensions.patterns.iter().any(|gp| {
+            let GlobPattern::User(gp) = gp else {
+                return false;
+            };
+            gp.value == "cs"
+        }));
+        assert!(bc.script_extensions.patterns.iter().any(|gp| {
+            let GlobPattern::Builtin(gp) = gp else {
+                return false;
+            };
+            gp.0.value == "*.py"
+        }));
+        assert!(bc.include_dependencies);
+        assert!(bc.include_workspace);
+        assert!(bc.include_archives);
+
+        let mut bypass = bc.bypass.pop().unwrap();
+        assert_eq!(bypass.name.value, "allversionsa");
+        assert!(bypass.version.is_none());
+        assert_eq!(
+            bypass.build_script.unwrap().value,
+            "5392f0e58ad06e089462d93304dfe82337acbbefb87a0749a7dc2ed32af04af7"
+                .parse()
+                .unwrap()
+        );
+        assert_eq!(
+            bypass.required_features.pop().unwrap().value,
+            "feature-used-at-build-time"
+        );
+        assert!(bypass.allow_globs.unwrap().patterns.iter().any(|gp| {
+            let GlobPattern::User(gp) = gp else {
+                return false;
+            };
+            gp.value == "scripts/*.cs"
+        }));
+        let ba = bypass.allow.pop().unwrap();
+        assert_eq!(ba.path.value, "bin/x86_64-linux");
+        assert_eq!(
+            ba.checksum.unwrap().value,
+            "5392f0e58ad06e089462d93304dfe82337acbbefb87a0749a7dc2ed32af04af7"
+                .parse()
+                .unwrap()
+        );
     }
 }

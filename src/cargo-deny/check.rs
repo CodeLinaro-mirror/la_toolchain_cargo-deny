@@ -61,13 +61,13 @@ impl std::str::FromStr for CodeOrLevel {
 #[derive(clap::Parser, Debug)]
 pub struct LintLevels {
     /// Set lint warnings
-    #[clap(long, short = 'W')]
+    #[arg(long, short = 'W')]
     warn: Vec<CodeOrLevel>,
     /// Set lint allowed
-    #[clap(long, short = 'A')]
+    #[arg(long, short = 'A')]
     allow: Vec<CodeOrLevel>,
     /// Set lint denied
-    #[clap(long, short = 'D')]
+    #[arg(long, short = 'D')]
     deny: Vec<CodeOrLevel>,
 }
 
@@ -76,38 +76,41 @@ pub struct Args {
     /// Path to the config to use
     ///
     /// Defaults to <cwd>/deny.toml if not specified
-    #[clap(short, long, action)]
+    #[arg(short, long)]
     pub config: Option<PathBuf>,
     /// Path to graph_output root directory
     ///
     /// If set, a dotviz graph will be created for whenever multiple versions of the same crate are detected.
     ///
     /// Each file will be created at <dir>/graph_output/<crate_name>.dot. <dir>/graph_output/* is deleted and recreated each run.
-    #[clap(short, long, action)]
+    #[arg(short, long)]
     pub graph: Option<PathBuf>,
     /// Hides the inclusion graph when printing out info for a crate
-    #[clap(long, action)]
+    #[arg(long)]
     pub hide_inclusion_graph: bool,
     /// Disable fetching of the advisory database
     ///
     /// When running the `advisories` check, the configured advisory database will be fetched and opened. If this flag is passed, the database won't be fetched, but an error will occur if it doesn't already exist locally.
-    #[clap(short, long, action)]
+    #[arg(short, long)]
     pub disable_fetch: bool,
+    /// If set, excludes all dev-dependencies, not just ones for non-workspace crates
+    #[arg(long)]
+    pub exclude_dev: bool,
     /// To ease transition from cargo-audit to cargo-deny, this flag will tell cargo-deny to output the exact same output as cargo-audit would, to `stdout` instead of `stderr`, just as with cargo-audit.
     ///
     /// Note that this flag only applies when the output format is JSON, and note that since cargo-deny supports multiple advisory databases, instead of a single JSON object, there will be 1 for each unique advisory database.
-    #[clap(long, action)]
+    #[arg(long)]
     pub audit_compatible_output: bool,
     /// Show stats for all the checks, regardless of the log-level
-    #[clap(short, long, action)]
+    #[arg(short, long)]
     pub show_stats: bool,
-    #[clap(flatten)]
+    #[command(flatten)]
     pub lint_levels: LintLevels,
     /// Specifies the depth at which feature edges are added in inclusion graphs
-    #[clap(long, conflicts_with = "hide_inclusion_graph")]
+    #[arg(long, conflicts_with = "hide_inclusion_graph")]
     pub feature_depth: Option<u32>,
     /// The check(s) to perform
-    #[clap(value_enum, action)]
+    #[arg(value_enum)]
     pub which: Vec<WhichCheck>,
 }
 
@@ -122,13 +125,16 @@ struct Config {
     targets: Vec<crate::common::Target>,
     #[serde(default)]
     exclude: Vec<String>,
+    #[serde(default)]
+    features: Vec<String>,
     feature_depth: Option<u32>,
     #[serde(default)]
     all_features: bool,
     #[serde(default)]
     no_default_features: bool,
+    /// By default, dev dependencies for workspace crates are not ignored
     #[serde(default)]
-    features: Vec<String>,
+    exclude_dev: bool,
 }
 
 struct ValidConfig {
@@ -138,15 +144,17 @@ struct ValidConfig {
     sources: sources::ValidConfig,
     targets: Vec<(krates::Target, Vec<String>)>,
     exclude: Vec<String>,
+    features: Vec<String>,
     feature_depth: Option<u32>,
     all_features: bool,
     no_default_features: bool,
-    features: Vec<String>,
+    exclude_dev: bool,
 }
 
 impl ValidConfig {
     fn load(
         cfg_path: Option<PathBuf>,
+        exceptions_cfg_path: Option<PathBuf>,
         files: &mut Files,
         log_ctx: crate::common::LogContext,
     ) -> Result<Self, Error> {
@@ -183,10 +191,27 @@ impl ValidConfig {
 
             let mut diags = Vec::new();
 
-            let advisories = cfg.advisories.unwrap_or_default().validate(id, &mut diags);
-            let bans = cfg.bans.unwrap_or_default().validate(id, &mut diags);
-            let licenses = cfg.licenses.unwrap_or_default().validate(id, &mut diags);
-            let sources = cfg.sources.unwrap_or_default().validate(id, &mut diags);
+            let advisories = cfg
+                .advisories
+                .unwrap_or_default()
+                .validate(id, files, &mut diags);
+
+            let bans = cfg.bans.unwrap_or_default().validate(id, files, &mut diags);
+            let mut licenses = cfg
+                .licenses
+                .unwrap_or_default()
+                .validate(id, files, &mut diags);
+
+            // Allow for project-local exceptions. Relevant in corporate environments.
+            // https://github.com/EmbarkStudios/cargo-deny/issues/541
+            if let Some(ecp) = exceptions_cfg_path {
+                licenses::cfg::load_exceptions(&mut licenses, ecp, files, &mut diags);
+            };
+
+            let sources = cfg
+                .sources
+                .unwrap_or_default()
+                .validate(id, files, &mut diags);
 
             let targets = crate::common::load_targets(cfg.targets, &mut diags, id);
             let exclude = cfg.exclude;
@@ -194,6 +219,7 @@ impl ValidConfig {
             let all_features = cfg.all_features;
             let no_default_features = cfg.no_default_features;
             let features = cfg.features;
+            let exclude_dev = cfg.exclude_dev;
 
             (
                 diags,
@@ -208,9 +234,14 @@ impl ValidConfig {
                     all_features,
                     no_default_features,
                     features,
+                    exclude_dev,
                 },
             )
         };
+
+        let (diags, valid_cfg) = validate();
+
+        let has_errors = diags.iter().any(|d| d.severity >= Severity::Error);
 
         let print = |diags: Vec<Diagnostic>| {
             if diags.is_empty() {
@@ -225,9 +256,6 @@ impl ValidConfig {
             }
         };
 
-        let (diags, valid_cfg) = validate();
-
-        let has_errors = diags.iter().any(|d| d.severity >= Severity::Error);
         print(diags);
 
         // While we could continue in the face of configuration errors, the user
@@ -257,8 +285,10 @@ pub(crate) fn cmd(
         all_features,
         no_default_features,
         features,
+        exclude_dev,
     } = ValidConfig::load(
         krate_ctx.get_config_path(args.config.clone()),
+        krate_ctx.get_local_exceptions_path(),
         &mut files,
         log_ctx,
     )?;
@@ -288,15 +318,11 @@ pub(crate) fn cmd(
 
     let feature_depth = args.feature_depth.or(feature_depth);
 
+    krate_ctx.all_features |= all_features;
+    krate_ctx.no_default_features |= no_default_features;
+    krate_ctx.exclude_dev |= exclude_dev | args.exclude_dev;
+
     // If not specified on the cmd line, fallback to the feature related config options
-    if !krate_ctx.all_features {
-        krate_ctx.all_features = all_features;
-    }
-
-    if !krate_ctx.no_default_features {
-        krate_ctx.no_default_features = no_default_features;
-    }
-
     if krate_ctx.features.is_empty() {
         krate_ctx.features = features;
     }
@@ -321,7 +347,7 @@ pub(crate) fn cmd(
                     match cl {
                         CodeOrLevel::Code(code) => {
                             if let Some(current) = code_overrides.get(code.as_str()) {
-                                anyhow::bail!("unable to override code '{code}' to '{severity:?}', it has already been overriden to '{current:?}'");
+                                anyhow::bail!("unable to override code '{code}' to '{severity:?}', it has already been overridden to '{current:?}'");
                             }
 
                             code_overrides.insert(code.as_str(), severity);
@@ -337,7 +363,7 @@ pub(crate) fn cmd(
                                     }
                                 })
                             {
-                                anyhow::bail!("unable to override level '{level:?}' to '{severity:?}', it has already been overriden to '{current:?}'");
+                                anyhow::bail!("unable to override level '{level:?}' to '{severity:?}', it has already been overridden to '{current:?}'");
                             }
 
                             level_overrides.push((ls, severity));
