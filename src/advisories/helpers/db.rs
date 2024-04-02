@@ -1,7 +1,7 @@
-use crate::{utf8path, Krate, Krates, Path, PathBuf};
+use crate::{Krate, Krates, Path, PathBuf};
 use anyhow::Context as _;
 use log::{debug, info};
-pub use rustsec::{advisory::Id, Database, Lockfile, Vulnerability};
+pub use rustsec::{advisory::Id, Database};
 use std::fmt;
 use url::Url;
 
@@ -41,56 +41,34 @@ impl fmt::Debug for AdvisoryDb {
 /// A collection of [`Database`]s that is used to query advisories
 /// in many different databases.
 ///
-/// [`Database`]: https://docs.rs/rustsec/0.25.0/rustsec/database/struct.Database.html
+/// [`Database`]: https://docs.rs/rustsec/latest/rustsec/database/struct.Database.html
 #[derive(Debug)]
 pub struct DbSet {
     pub dbs: Vec<AdvisoryDb>,
 }
 
 impl DbSet {
-    pub fn load(
-        root: Option<impl AsRef<Path>>,
-        mut urls: Vec<Url>,
-        fetch: Fetch,
-    ) -> anyhow::Result<Self> {
-        let root_db_path = match root {
-            Some(root) => {
-                let user_root = root.as_ref();
-                if let Ok(user_root) = user_root.strip_prefix("~") {
-                    if let Some(home) = home::home_dir() {
-                        utf8path(home.join(user_root))?
-                    } else {
-                        log::warn!(
-                            "unable to resolve path '{user_root}', falling back to the default advisory path"
-                        );
-
-                        // This would only succeed of CARGO_HOME was explicitly set
-                        utf8path(
-                            home::cargo_home()
-                                .context("failed to resolve CARGO_HOME")?
-                                .join("advisory-dbs"),
-                        )?
-                    }
-                } else {
-                    user_root.to_owned()
-                }
-            }
-            None => utf8path(
-                home::cargo_home()
-                    .context("failed to resolve CARGO_HOME")?
-                    .join("advisory-dbs"),
-            )?,
-        };
-
+    pub fn load(root: PathBuf, mut urls: Vec<Url>, fetch: Fetch) -> anyhow::Result<Self> {
         if urls.is_empty() {
             info!("No advisory database configured, falling back to default '{DEFAULT_URL}'");
             urls.push(Url::parse(DEFAULT_URL).unwrap());
         }
 
+        // Acquire an exclusive lock, even if we aren't fetching, to prevent
+        // other cargo-deny processes from performing mutations
+        let lock_path = root.join("db.lock");
+        let _lock = tame_index::utils::flock::LockOptions::new(&lock_path)
+            .exclusive(false)
+            .lock(|path| {
+                log::info!("waiting on advisory db lock '{path}'");
+                Some(std::time::Duration::from_secs(60))
+            })
+            .context("failed to acquire advisory database lock")?;
+
         use rayon::prelude::*;
         let mut dbs = Vec::with_capacity(urls.len());
         urls.into_par_iter()
-            .map(|url| load_db(url, root_db_path.clone(), fetch))
+            .map(|url| load_db(url, root.clone(), fetch))
             .collect_into_vec(&mut dbs);
 
         Ok(Self {
@@ -121,6 +99,7 @@ fn load_db(url: Url, root_db_path: PathBuf, fetch: Fetch) -> anyhow::Result<Advi
     let db_url = &url;
     let db_path = url_to_db_path(root_db_path, db_url)?;
 
+    let fetch_start = std::time::Instant::now();
     match fetch {
         Fetch::Allow => {
             debug!("Fetching advisory database from '{db_url}'");
@@ -153,6 +132,11 @@ fn load_db(url: Url, root_db_path: PathBuf, fetch: Fetch) -> anyhow::Result<Advi
                     .checked_sub(max_staleness)
                     .context("unable to compute oldest allowable update timestamp")?,
             "repository is stale (last update: {fetch_time})"
+        );
+    } else {
+        info!(
+            "advisory database {db_url} fetched in {:?}",
+            fetch_start.elapsed()
         );
     }
 
@@ -330,16 +314,13 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
         );
     }
 
-    use gix::prelude::FindExt;
-
     // Now that we've updated HEAD, do the actual checkout
     let workdir = repo
         .work_dir()
         .context("unable to checkout, repository is bare")?;
     let root_tree = repo
         .head()?
-        .peel_to_id_in_place()
-        .transpose()?
+        .try_peel_to_id_in_place()?
         .context("unable to peel HEAD")?
         .object()
         .context("HEAD commit not downloaded from remote")?
@@ -347,10 +328,8 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
         .context("unable to peel HEAD to tree")?
         .id;
 
-    let index = gix::index::State::from_tree(&root_tree, |oid, buf| {
-        repo.objects.find_tree_iter(oid, buf).ok()
-    })
-    .with_context(|| format!("failed to create index from tree '{root_tree}'"))?;
+    let index = gix::index::State::from_tree(&root_tree, &repo.objects)
+        .with_context(|| format!("failed to create index from tree '{root_tree}'"))?;
     let mut index = gix::index::File::from_state(index, repo.index_path());
 
     let opts = gix::worktree::state::checkout::Options {
@@ -362,12 +341,9 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
     gix::worktree::state::checkout(
         &mut index,
         workdir,
-        {
-            let objects = repo.objects.clone().into_arc()?;
-            move |oid, buf| objects.find_blob(oid, buf)
-        },
-        &mut progress,
-        &mut gix::progress::Discard,
+        repo.objects.clone().into_arc()?,
+        &progress,
+        &gix::progress::Discard,
         should_interrupt,
         opts,
     )
@@ -404,18 +380,6 @@ fn fetch_via_gix(url: &Url, db_path: &Path) -> anyhow::Result<()> {
     if db_path.is_dir() && std::fs::read_dir(db_path)?.next().is_none() {
         std::fs::remove_dir(db_path)?;
     }
-
-    let _lock = gix::lock::Marker::acquire_to_hold_resource(
-        db_path.with_extension("cargo-deny"),
-        gix::lock::acquire::Fail::AfterDurationWithBackoff(std::time::Duration::from_secs(
-            60 * 10, /* 10 minutes */
-        )),
-        #[allow(clippy::disallowed_types)]
-        Some(std::path::PathBuf::from_iter(Some(
-            std::path::Component::RootDir,
-        ))),
-    )
-    .context("failed to acquire lock")?;
 
     let open_or_clone_repo = || -> anyhow::Result<_> {
         let mut mapping = gix::sec::trust::Mapping::default();
@@ -483,7 +447,7 @@ fn fetch_via_gix(url: &Url, db_path: &Path) -> anyhow::Result<()> {
             &repo.find_remote("origin").unwrap(),
         )?;
     } else {
-        // If we didn't open a fresh repo we need to peform a fetch ourselves, and
+        // If we didn't open a fresh repo we need to perform a fetch ourselves, and
         // do the work of updating the HEAD to point at the latest remote HEAD, which
         // gix doesn't currently do.
         //
@@ -565,11 +529,9 @@ fn fetch_via_cli(url: &str, db_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub use rustsec::{Warning, WarningKind};
-
 pub struct Report<'db, 'k> {
     pub advisories: Vec<(&'k Krate, krates::NodeId, &'db rustsec::Advisory)>,
-    /// For backwards compatiblity with cargo-audit, we optionally serialize the
+    /// For backwards compatibility with cargo-audit, we optionally serialize the
     /// reports to JSON and output them in addition to the normal cargo-deny
     /// diagnostics
     pub serialized_reports: Vec<serde_json::Value>,
@@ -624,8 +586,8 @@ impl<'db, 'k> Report<'db, 'k> {
                     krates
                         .krates_by_name(advisory.metadata.package.as_str())
                         .par_bridge()
-                        .filter_map(move |(nid, krate)| {
-                            let ksrc = krate.source.as_ref()?;
+                        .filter_map(move |km| {
+                            let ksrc = km.krate.source.as_ref()?;
 
                             // Validate the crate's source is the same as the advisory
                             if !ksrc.matches_rustsec(advisory.metadata.source.as_ref()) {
@@ -633,11 +595,11 @@ impl<'db, 'k> Report<'db, 'k> {
                             }
 
                             // Ensure the crate's version is actually affected
-                            if !advisory.versions.is_vulnerable(&krate.version) {
+                            if !advisory.versions.is_vulnerable(&km.krate.version) {
                                 return None;
                             }
 
-                            Some((krate, nid, advisory))
+                            Some((km.krate, km.node_id, advisory))
                         })
                 })
                 .collect();
@@ -725,6 +687,8 @@ impl<'db, 'k> Report<'db, 'k> {
             advisories.append(&mut db_advisories);
         }
 
+        advisories.sort_by(|a, b| a.1.cmp(&b.1));
+
         Self {
             advisories,
             serialized_reports,
@@ -743,25 +707,49 @@ mod test {
 
         {
             let url = Url::parse("https://github.com/RustSec/advisory-db").unwrap();
+
+            #[cfg(target_endian = "little")]
             assert_eq!(
                 url_to_db_path(root_path.clone(), &url).unwrap(),
                 root_path.join("github.com-a946fc29ac602819")
+            );
+
+            #[cfg(target_endian = "big")]
+            assert_eq!(
+                url_to_db_path(root_path.clone(), &url).unwrap(),
+                root_path.join("github.com-f4edf1c00e90fd42")
             );
         }
 
         {
             let url = Url::parse("https://bare.com").unwrap();
+
+            #[cfg(target_endian = "little")]
             assert_eq!(
                 url_to_db_path(root_path.clone(), &url).unwrap(),
                 root_path.join("bare.com-9c003d1ed306b28c")
+            );
+
+            #[cfg(target_endian = "big")]
+            assert_eq!(
+                url_to_db_path(root_path.clone(), &url).unwrap(),
+                root_path.join("bare.com-c9767e4ee31501de")
             );
         }
 
         {
             let url = Url::parse("https://example.com/countries/việt nam").unwrap();
+
+            #[cfg(target_endian = "little")]
             assert_eq!(
                 url_to_db_path(root_path.clone(), &url).unwrap(),
                 root_path.join("example.com-1c03f84825fb7438")
+            );
+
+            #[cfg(target_endian = "big")]
+            assert_eq!(
+                url_to_db_path(root_path.clone(), &url).unwrap(),
+                root_path.join("example.com-5ebf17a6f3e576f0")
             );
         }
     }

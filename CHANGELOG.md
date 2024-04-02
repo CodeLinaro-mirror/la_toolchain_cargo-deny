@@ -8,6 +8,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.14.20] - 2024-03-23
+### Fixed
+- [PR#642](https://github.com/EmbarkStudios/cargo-deny/pull/642) resolved [#641](https://github.com/EmbarkStudios/cargo-deny/issues/641) by pinning `gix-transport` (and its unique dependencies) to 0.41.2 as a workaround for `cargo install` not using the lockfile. See [this issue](https://github.com/Byron/gitoxide/issues/1328) for more information.
+
+## [0.14.19] - 2024-03-21
+### Changed
+- [PR#639](https://github.com/EmbarkStudios/cargo-deny/pull/639) updated tame-index to avoid an error if you don't used `--locked`.
+
+## [0.14.18] - 2024-03-21
+### Fixed
+- [PR#638](https://github.com/EmbarkStudios/cargo-deny/pull/638) resolved [#636](https://github.com/EmbarkStudios/cargo-deny/issues/636) by updating `krates`.
+
+## [0.14.17] - 2024-03-17
+### Changed
+- [PR#631](https://github.com/EmbarkStudios/cargo-deny/pull/631) improved the diagnostic for when the yank check fails due to some issue with retrieving or reading the index information.
+- [PR#633](https://github.com/EmbarkStudios/cargo-deny/pull/633) updated `gix` -> 0.60.
+
+## [0.14.16] - 2024-03-06
+### Fixed
+- [PR#626](https://github.com/EmbarkStudios/cargo-deny/pull/626) resolved [#625](https://github.com/EmbarkStudios/cargo-deny/issues/625) by explicitly checking that a license identified as Pixar was actually (probably) the Pixar license, instead of a normal Apache-2.0 license.
+
+## [0.14.15] - 2024-02-28
+### Added
+- [PR#618](https://github.com/EmbarkStudios/cargo-deny/pull/618) added metadata notes to diagnostics when a license is rejected, as well as removing span information for accepted licenses unless the log level is `info` or higher to make the diagnostic clearer by default.
+
+## [0.14.14] - 2024-02-26
+### Fixed
+- [PR#617](https://github.com/EmbarkStudios/cargo-deny/pull/617) resolved [#576](https://github.com/EmbarkStudios/cargo-deny/issues/576) by updating the SPDX license list to 3.23.
+
+## [0.14.13] - 2024-02-24
+### Fixed
+- [PR#615](https://github.com/EmbarkStudios/cargo-deny/pull/615) fixed an issue introduced in [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) where the various `bans` diagnostic codes could not have their lint level changed via the CLI. It also introduced the `deprecated` diagnostic code.
+
+## [0.14.12] - 2024-02-23
+### Changed
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) did a major refactor of configuration, both how it is deserialized and changing (hopefully improving) many options.
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) moved `targets`, `exclude`, `all-features`, `features`, `no-default-features`, and `exclude` into the `[graph]` table.
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) moved `feature-depth` into the `[output]` table.
+
+### Added
+- [PR#613](https://github.com/EmbarkStudios/cargo-deny/pull/613) added support for [basic shell expansion](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html#the-db-path-field-optional) to `advisories.db-path`, which expands support beyond just `~` to include environment variable expansion.
+
+### Fixed
+- [PR#601](https://github.com/EmbarkStudios/cargo-deny/pull/601) resolved [#600](https://github.com/EmbarkStudios/cargo-deny/issues/600) by outputting the correct spans when a license was both allowed and denied.
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) resolved [#264](https://github.com/EmbarkStudios/cargo-deny/issues/264) be replacing `toml` and `serde` with `toml-span`.
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) resolved [#539](https://github.com/EmbarkStudios/cargo-deny/issues/539) by simplifying the very common `name = "<crate_name>", version = "<requirements>"` used to target specific crates into either a plain [package spec string](https://embarkstudios.github.io/cargo-deny/checks/cfg.html#string-format) or the simpler `crate = "<package spec>"`.
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) resolved [#578](https://github.com/EmbarkStudios/cargo-deny/issues/578) by adding a `reason = "<reason>"` field to _many_ fields within the configuration that are provided in diagnostics. `[bans.deny]` also has an additional `use-instead = "<url/crate_name>"`. [PR#610](https://github.com/EmbarkStudios/cargo-deny/pull/610) did this for the `advisories.ignore` field.
+- [PR#605](https://github.com/EmbarkStudios/cargo-deny/pull/605) resolved [#579](https://github.com/EmbarkStudios/cargo-deny/issues/579) by allowing yanked crates to be ignored by specifying a [PackageSpec](https://embarkstudios.github.io/cargo-deny/checks/cfg.html#package-specs) in the `[advisories.ignore]` array.
+
+### Deprecated
+- [PR#606](https://github.com/EmbarkStudios/cargo-deny/pull/606) and [PR#611](https://github.com/EmbarkStudios/cargo-deny/pull/611) together deprecated several fields listed below. See [PR#611](https://github.com/EmbarkStudios/cargo-deny/pull/611) for how to change your config to opt-in to the new behavior that will become the default when the deprecated fields are removed in a future minor version.
+  - `[advisories]`
+    - `vulnerability`
+    - `unmaintained`
+    - `unsound`
+    - `notice`
+    - `severity-threshold`
+  - `[licenses]`
+    - `unlicensed`
+    - `allow-osi-fsf-free`
+    - `copyleft`
+    - `default`
+    - `deny`
+
+## [0.14.11] - 2024-02-05
+### Fixed
+- [PR#599](https://github.com/EmbarkStudios/cargo-deny/pull/599) resolved [#488](https://github.com/EmbarkStudios/cargo-deny/issues/488) by treating git and path sources differently. Thanks [@kpreid](https://github.com/kpreid)!
+
+## [0.14.10] - 2024-01-24
+### Fixed
+- [PR#596](https://github.com/EmbarkStudios/cargo-deny/pull/596) updated `krates` _again_ to pull in [krates#77](https://github.com/EmbarkStudios/krates/pull/77).
+
+## [0.14.9] - 2024-01-24
+### Fixed
+- [PR#594](https://github.com/EmbarkStudios/cargo-deny/pull/594) updated `krates` _again_ to pull in [krates#75](https://github.com/EmbarkStudios/krates/pull/75).
+
+## [0.14.8] - 2024-01-22
+### Fixed
+- [PR#592](https://github.com/EmbarkStudios/cargo-deny/pull/592) updated `krates` _again_ to pull in [krates#73](https://github.com/EmbarkStudios/krates/pull/73).
+
+## [0.14.7] - 2024-01-22
+### Fixed
+- [PR#591](https://github.com/EmbarkStudios/cargo-deny/pull/591) updated `krates` _again_ to pull in [krates#71](https://github.com/EmbarkStudios/krates/pull/71).
+
+## [0.14.6] - 2024-01-21
+### Fixed
+- [PR#590](https://github.com/EmbarkStudios/cargo-deny/pull/590) updated `krates` to fix an issue with crates that directly have a dependency on 2 or more versions of the same crate.
+
+### Added
+- [PR#590](https://github.com/EmbarkStudios/cargo-deny/pull/590) resolved [#405](https://github.com/EmbarkStudios/cargo-deny/issues/405) by emitting warnings when a `wrapper` crate for a banned crate does not have a dependency on that crate.
+
+### Changed
+- [PR#591](https://github.com/EmbarkStudios/cargo-deny/pull/591) updated `gix` and `tame-index`.
+
+## [0.14.5] - 2024-01-20
+### Fixed
+- [PR#588](https://github.com/EmbarkStudios/cargo-deny/pull/588) resolved an issue introduced in [0.14.4] where features that reference dev-only dependencies in non-workspace crates would cause a [panic](https://github.com/EmbarkStudios/krates/issues/66).
+
+## [0.14.4] - 2024-01-19
+### Fixed
+- [PR#586](https://github.com/EmbarkStudios/cargo-deny/pull/586) resolved 2 issues with crate graph creation, see [krates#60](https://github.com/EmbarkStudios/krates/issues/60) and [krates#64](https://github.com/EmbarkStudios/krates/issues/64) for more details.
+
+## [0.14.3] - 2023-09-29
+### Fixed
+- [PR#566](https://github.com/EmbarkStudios/cargo-deny/pull/566) updated `tame-index` to obtain support OS file locking, resolving [#537](https://github.com/EmbarkStudios/cargo-deny/issues/537). This change means that cargo-deny should not encounter issues such as those described [here](https://github.com/rustsec/rustsec/issues/1011) since we no longer use `gix::lock` locking advisory databases, and makes reading the crates.io index safer by respecting the lock used by cargo itself.
+
 ## [0.14.2] - 2023-09-04
 ### Added
 - [PR#545](https://github.com/EmbarkStudios/cargo-deny/pull/545) added the ability to specify additional license exceptions via [additional configuration files](https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html#additional-exceptions-configuration-file).
@@ -276,7 +382,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [PR#262](https://github.com/EmbarkStudios/cargo-deny/pull/262) added the `fix` subcommand, which was added to bring `cargo-deny` to feature parity with `cargo-audit` so that it can take over for `cargo-audit` as the [official frontend](https://github.com/EmbarkStudios/cargo-deny/issues/194) for the the [RustSec Advisory Database](https://github.com/RustSec/advisory-db).
 
 ### Changed
-- `advisories.db-url` has been deprecated in favor of `advisories.db-urls` since multiple databses are now supported.
+- `advisories.db-url` has been deprecated in favor of `advisories.db-urls` since multiple databases are now supported.
 - `advisories.db-path` is now no longer the directory into which the advisory database is cloned into, but rather a root directory where each unique database is placed in a canonicalized directory similar to how `.cargo/registry/index` directories work.
 - [PR#274](https://github.com/EmbarkStudios/cargo-deny/pull/274) resolved [#115](https://github.com/EmbarkStudios/cargo-deny/issues/115) by normalizing git urls. Thanks [@senden9](https://github.com/senden9)!
 
@@ -337,7 +443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a `fetch` subcommand that can be used to fetch external data, currently the crates.io index and the configured advisory database
 
 ### Changed
-- Upgraded to rustsec 0.18.0, which slighly reworks how yanked crate detection is done
+- Upgraded to rustsec 0.18.0, which slightly reworks how yanked crate detection is done
 
 ## [0.6.4] - 2020-02-08
 ### Fixed
@@ -480,7 +586,25 @@ Now each license has to be explicitly approved, either by listing them in `licen
 - Initial implementation release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.2...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.20...HEAD
+[0.14.20]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.19...0.14.20
+[0.14.19]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.18...0.14.19
+[0.14.18]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.17...0.14.18
+[0.14.17]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.16...0.14.17
+[0.14.16]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.15...0.14.16
+[0.14.15]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.14...0.14.15
+[0.14.14]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.13...0.14.14
+[0.14.13]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.12...0.14.13
+[0.14.12]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.11...0.14.12
+[0.14.11]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.10...0.14.11
+[0.14.10]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.9...0.14.10
+[0.14.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.8...0.14.9
+[0.14.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.7...0.14.8
+[0.14.7]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.6...0.14.7
+[0.14.6]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.5...0.14.6
+[0.14.5]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.4...0.14.5
+[0.14.4]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.3...0.14.4
+[0.14.3]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.2...0.14.3
 [0.14.2]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.1...0.14.2
 [0.14.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.14.0...0.14.1
 [0.14.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.13.9...0.14.0

@@ -1,6 +1,6 @@
-mod cfg;
+pub mod cfg;
 mod diags;
-pub use cfg::{Config, GitSpec, ValidConfig};
+use cfg::ValidConfig;
 pub use diags::Code;
 
 use crate::{
@@ -31,7 +31,7 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
         (
             rgs.value,
             CfgCoord {
-                span: rgs.span.clone(),
+                span: rgs.span,
                 file: ctx.cfg.file_id,
             },
         )
@@ -45,15 +45,11 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
 
         let mut pack = Pack::with_kid(Check::Sources, krate.id.clone());
 
-        let source_label = {
-            let mut span = ctx.krate_spans[i].clone();
-
-            // The krate span is the complete id, but we only want
-            // to highlight the source component
-            let last_space = krate.id.repr.rfind(' ').unwrap();
-
-            span.start = span.start + last_space + 1;
-            Label::primary(ctx.krate_spans.file_id, span).with_message("source")
+        let mut sl = None;
+        let label = || {
+            let span = &ctx.krate_spans[i];
+            Label::primary(ctx.krate_spans.file_id, span.source..span.total.end)
+                .with_message("source")
         };
 
         // get allowed list of sources to check
@@ -64,7 +60,7 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
             if let Some((min, cfg_coord)) = &min_git_spec {
                 if spec < *min {
                     pack.push(diags::BelowMinimumRequiredSpec {
-                        src_label: &source_label,
+                        src_label: sl.get_or_insert_with(label),
                         min_spec: *min,
                         actual_spec: spec,
                         min_spec_cfg: cfg_coord.clone(),
@@ -94,11 +90,11 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
             }
 
             diags::ExplicitlyAllowedSource {
-                src_label: &source_label,
+                src_label: sl.get_or_insert_with(label),
                 type_name,
                 allow_cfg: CfgCoord {
                     file: ctx.cfg.file_id,
-                    span: ctx.cfg.allowed_sources[ind].url.span.clone(),
+                    span: ctx.cfg.allowed_sources[ind].url.span,
                 },
             }
             .into()
@@ -116,16 +112,16 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
             {
                 org_hits.as_mut_bitslice().set(ind, true);
                 diags::SourceAllowedByOrg {
-                    src_label: &source_label,
+                    src_label: sl.get_or_insert_with(label),
                     org_cfg: CfgCoord {
                         file: ctx.cfg.file_id,
-                        span: ctx.cfg.allowed_orgs[ind].1.span.clone(),
+                        span: ctx.cfg.allowed_orgs[ind].1.span,
                     },
                 }
                 .into()
             } else {
                 diags::SourceNotExplicitlyAllowed {
-                    src_label: &source_label,
+                    src_label: sl.get_or_insert_with(label),
                     lint_level,
                     type_name,
                 }
@@ -133,7 +129,7 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
             }
         } else {
             diags::SourceNotExplicitlyAllowed {
-                src_label: &source_label,
+                src_label: sl.get_or_insert_with(label),
                 lint_level,
                 type_name,
             }

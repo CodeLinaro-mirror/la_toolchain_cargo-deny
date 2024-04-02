@@ -1,8 +1,22 @@
+use super::cfg::IgnoreId;
 use crate::{
-    diag::{Check, Diagnostic, Label, Pack, Severity},
+    diag::{Check, Diagnostic, FileId, Label, Pack, Severity},
     LintLevel,
 };
-use rustsec::advisory::{Id, Informational, Metadata, Versions};
+use rustsec::advisory::{Informational, Metadata, Versions};
+
+impl IgnoreId {
+    fn to_labels(&self, id: FileId, msg: impl Into<String>) -> Vec<Label> {
+        let mut v = Vec::with_capacity(self.reason.as_ref().map_or(1, |_| 2));
+        v.push(Label::primary(id, self.id.span).with_message(msg));
+
+        if let Some(reason) = &self.reason {
+            v.push(Label::secondary(id, reason.0.span).with_message("ignore reason"));
+        }
+
+        v
+    }
+}
 
 #[derive(
     strum::Display,
@@ -22,9 +36,12 @@ pub enum Code {
     Unmaintained,
     Unsound,
     Yanked,
+    AdvisoryIgnored,
+    YankedIgnored,
     IndexFailure,
     IndexCacheLoadFailure,
     AdvisoryNotDetected,
+    YankedNotDetected,
     UnknownAdvisory,
 }
 
@@ -69,27 +86,21 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
             Unsound,
         }
 
+        let mut pack = Pack::with_kid(Check::Advisories, krate.id.clone());
+
         let (severity, ty) = {
-            let (lint_level, msg) = match &advisory.informational {
-                // Everything that isn't an informational advisory is a vulnerability
-                None => (self.cfg.vulnerability, AdvisoryType::Vulnerability),
-                Some(info) => match info {
-                    // Security notices for a crate which are published on https://rustsec.org
-                    // but don't represent a vulnerability in a crate itself.
-                    Informational::Notice => (self.cfg.notice, AdvisoryType::Notice),
+            let adv_ty = advisory.informational.as_ref().map_or(AdvisoryType::Vulnerability, |info| {
+                match info {
                     // Crate is unmaintained / abandoned
-                    Informational::Unmaintained => {
-                        (self.cfg.unmaintained, AdvisoryType::Unmaintained)
+                    Informational::Unmaintained => AdvisoryType::Unmaintained,
+                    Informational::Unsound => AdvisoryType::Unsound,
+                    Informational::Notice => AdvisoryType::Notice,
+                    Informational::Other(other) => {
+                        unreachable!("rustsec only returns Informational::Other({other}) advisories if we ask, and there are none at the moment to ask for");
                     }
-                    Informational::Unsound => (self.cfg.unsound, AdvisoryType::Unsound),
-                    // Other types of informational advisories: left open-ended to add
-                    // more of them in the future.
-                    Informational::Other(_) => {
-                        unreachable!("rustsec only returns these if we ask, and there are none at the moment to ask for");
-                    }
-                    _ => unreachable!("unknown advisory type encountered"),
-                },
-            };
+                    _ => unreachable!("non_exhaustive enums are the worst"),
+                }
+            });
 
             // Ok, we found a crate whose version lies within the range of an
             // advisory, but the user might have decided to ignore it
@@ -98,26 +109,44 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
             let lint_level = if let Ok(index) = self
                 .cfg
                 .ignore
-                .binary_search_by(|i| i.value.cmp(&advisory.id))
+                .binary_search_by(|i| i.id.value.cmp(&advisory.id))
             {
                 on_ignore(index);
+
+                pack.push(
+                    Diagnostic::note()
+                        .with_message("advisory ignored")
+                        .with_code(Code::AdvisoryIgnored)
+                        .with_labels(
+                            self.cfg.ignore[index]
+                                .to_labels(self.cfg.file_id, "advisory ignored here"),
+                        ),
+                );
+
                 LintLevel::Allow
-            } else if let Some(severity_threshold) = self.cfg.severity_threshold {
-                if let Some(advisory_severity) = advisory.cvss.as_ref().map(|cvss| cvss.severity())
-                {
-                    if advisory_severity < severity_threshold {
-                        LintLevel::Allow
-                    } else {
-                        lint_level
+            } else if let Some(deprecated) = &self.cfg.deprecated {
+                'll: {
+                    if let (Some(st), Some(sev)) = (
+                        deprecated.severity_threshold,
+                        advisory.cvss.as_ref().map(|c| c.severity()),
+                    ) {
+                        if sev < st {
+                            break 'll LintLevel::Allow;
+                        }
                     }
-                } else {
-                    lint_level
+
+                    match adv_ty {
+                        AdvisoryType::Vulnerability => deprecated.vulnerability,
+                        AdvisoryType::Unmaintained => deprecated.unmaintained,
+                        AdvisoryType::Unsound => deprecated.unsound,
+                        AdvisoryType::Notice => deprecated.notice,
+                    }
                 }
             } else {
-                lint_level
+                LintLevel::Deny
             };
 
-            (lint_level.into(), msg)
+            (lint_level.into(), adv_ty)
         };
 
         let mut notes = get_notes_from_advisory(advisory);
@@ -139,8 +168,6 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
                 ));
             }
         };
-
-        let mut pack = Pack::with_kid(Check::Advisories, krate.id.clone());
 
         let (message, code) = match ty {
             AdvisoryType::Vulnerability => ("security vulnerability detected", Code::Vulnerability),
@@ -187,6 +214,18 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
         pack
     }
 
+    pub(crate) fn diag_for_yanked_ignore(&self, krate: &crate::Krate, ignore: usize) -> Pack {
+        let mut pack = Pack::with_kid(Check::Advisories, krate.id.clone());
+        pack.push(
+            Diagnostic::note()
+                .with_message(format!("yanked crate '{krate}' detected, but ignored",))
+                .with_code(Code::YankedIgnored)
+                .with_labels(self.cfg.ignore_yanked[ignore].to_labels(Some("yanked ignore"))),
+        );
+
+        pack
+    }
+
     pub(crate) fn diag_for_index_failure<D: std::fmt::Display>(
         &self,
         krate: &crate::Krate,
@@ -202,7 +241,7 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
         // to the beginning and confuses users
         if !self.cfg.yanked.span.is_empty() {
             labels.push(
-                Label::primary(self.cfg.file_id, self.cfg.yanked.span.clone())
+                Label::primary(self.cfg.file_id, self.cfg.yanked.span)
                     .with_message("lint level defined here"),
             );
         }
@@ -229,29 +268,41 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
             .into()
     }
 
-    pub(crate) fn diag_for_advisory_not_encountered(
-        &self,
-        not_hit: &crate::cfg::Spanned<Id>,
-    ) -> Pack {
+    pub(crate) fn diag_for_advisory_not_encountered(&self, not_hit: &IgnoreId) -> Pack {
         (
             Check::Advisories,
             Diagnostic::new(Severity::Warning)
                 .with_message("advisory was not encountered")
                 .with_code(Code::AdvisoryNotDetected)
-                .with_labels(vec![Label::primary(self.cfg.file_id, not_hit.span.clone())
-                    .with_message("no crate matched advisory criteria")]),
+                .with_labels(
+                    not_hit.to_labels(self.cfg.file_id, "no crate matched advisory criteria"),
+                ),
         )
             .into()
     }
 
-    pub(crate) fn diag_for_unknown_advisory(&self, unknown: &crate::cfg::Spanned<Id>) -> Pack {
+    #[allow(clippy::unused_self)]
+    pub(crate) fn diag_for_ignored_yanked_not_encountered(
+        &self,
+        not_hit: &crate::bans::SpecAndReason,
+    ) -> Pack {
+        (
+            Check::Advisories,
+            Diagnostic::new(Severity::Warning)
+                .with_message("yanked crate was not encountered")
+                .with_code(Code::YankedNotDetected)
+                .with_labels(not_hit.to_labels(Some("yanked crate not detected"))),
+        )
+            .into()
+    }
+
+    pub(crate) fn diag_for_unknown_advisory(&self, unknown: &IgnoreId) -> Pack {
         (
             Check::Advisories,
             Diagnostic::new(Severity::Warning)
                 .with_message("advisory not found in any advisory database")
                 .with_code(Code::UnknownAdvisory)
-                .with_labels(vec![Label::primary(self.cfg.file_id, unknown.span.clone())
-                    .with_message("unknown advisory")]),
+                .with_labels(unknown.to_labels(self.cfg.file_id, "unknown advisory")),
         )
             .into()
     }

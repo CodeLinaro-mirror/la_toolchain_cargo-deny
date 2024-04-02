@@ -1,3 +1,5 @@
+<!-- markdownlint-disable no-inline-html first-line-heading no-emphasis-as-heading -->
+
 <div align="center">
 
 # `❌ cargo-deny`
@@ -10,7 +12,7 @@
 [![API Docs](https://docs.rs/cargo-deny/badge.svg)](https://docs.rs/cargo-deny)
 [![Docs](https://img.shields.io/badge/The%20Book-📕-brightgreen.svg)](https://embarkstudios.github.io/cargo-deny/)
 [![Minimum Stable Rust Version](https://img.shields.io/badge/Rust-1.70.0-blue?color=fc8d62&logo=rust)](https://blog.rust-lang.org/2023/06/01/Rust-1.70.0.html)
-[![SPDX Version](https://img.shields.io/badge/SPDX%20Version-3.21-blue.svg)](https://spdx.org/licenses/)
+[![SPDX Version](https://img.shields.io/badge/SPDX%20Version-3.23-blue.svg)](https://spdx.org/licenses/)
 [![dependency status](https://deps.rs/repo/github/EmbarkStudios/cargo-deny/status.svg)](https://deps.rs/repo/github/EmbarkStudios/cargo-deny)
 [![Build Status](https://github.com/EmbarkStudios/cargo-deny/workflows/CI/badge.svg)](https://github.com/EmbarkStudios/cargo-deny/actions?workflow=CI)
 
@@ -92,6 +94,18 @@ cargo deny check sources
 ```
 
 ![sources output](docs/src/output/sources.svg)
+
+### Pre-commit hook
+
+You can use `cargo-deny` with [pre-commit](https://pre-commit.com). Add it to your local `.pre-commit-config.yaml` as follows:
+
+```yaml
+- repo: https://github.com/EmbarkStudios/cargo-deny
+  rev: 0.14.16 # choose your preferred tag
+  hooks:
+    - id: cargo-deny
+      args: ["--all-features", "check"] # optionally modify the arguments for cargo-deny (default arguments shown here)
+```
 
 ## Contributing
 

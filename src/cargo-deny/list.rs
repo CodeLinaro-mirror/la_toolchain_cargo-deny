@@ -1,4 +1,5 @@
-use anyhow::{Context, Error};
+use crate::common::ValidConfig;
+use anyhow::{Context as _, Error};
 use cargo_deny::{diag::Files, licenses, Kid, PathBuf};
 use nu_ansi_term::Color;
 use serde::Serialize;
@@ -38,96 +39,6 @@ pub struct Args {
     layout: Layout,
 }
 
-#[derive(serde::Deserialize)]
-struct Config {
-    #[serde(default)]
-    targets: Vec<crate::common::Target>,
-    #[serde(default)]
-    exclude: Vec<String>,
-}
-
-struct ValidConfig {
-    targets: Vec<(krates::Target, Vec<String>)>,
-    exclude: Vec<String>,
-}
-
-impl ValidConfig {
-    fn load(
-        cfg_path: Option<PathBuf>,
-        files: &mut Files,
-        log_ctx: crate::common::LogContext,
-    ) -> Result<Self, Error> {
-        let (cfg_contents, cfg_path) = match cfg_path {
-            Some(cfg_path) if cfg_path.exists() => (
-                std::fs::read_to_string(&cfg_path)
-                    .with_context(|| format!("failed to read config from {cfg_path}"))?,
-                cfg_path,
-            ),
-            Some(cfg_path) => {
-                log::warn!(
-                    "config path '{cfg_path}' doesn't exist, falling back to default config"
-                );
-
-                return Ok(Self {
-                    targets: Vec::new(),
-                    exclude: Vec::new(),
-                });
-            }
-            None => {
-                log::warn!("unable to find a config path, falling back to default config");
-
-                return Ok(Self {
-                    targets: Vec::new(),
-                    exclude: Vec::new(),
-                });
-            }
-        };
-
-        let cfg: Config = toml::from_str(&cfg_contents)
-            .with_context(|| format!("failed to deserialize config from '{cfg_path}'"))?;
-
-        log::info!("using config from {cfg_path}");
-
-        let id = files.add(&cfg_path, cfg_contents);
-
-        use cargo_deny::diag::Diagnostic;
-
-        let validate = || -> Result<(Vec<Diagnostic>, Self), Vec<Diagnostic>> {
-            let mut diagnostics = Vec::new();
-            let targets = crate::common::load_targets(cfg.targets, &mut diagnostics, id);
-            let exclude = cfg.exclude;
-
-            Ok((diagnostics, Self { targets, exclude }))
-        };
-
-        let print = |diags: Vec<Diagnostic>| {
-            if diags.is_empty() {
-                return;
-            }
-
-            if let Some(printer) = crate::common::DiagPrinter::new(log_ctx, None, None) {
-                let mut lock = printer.lock();
-                for diag in diags {
-                    lock.print(diag, files);
-                }
-            }
-        };
-
-        match validate() {
-            Ok((diags, vc)) => {
-                print(diags);
-                Ok(vc)
-            }
-            Err(diags) => {
-                print(diags);
-
-                anyhow::bail!("failed to validate configuration file {cfg_path}");
-            }
-        }
-    }
-}
-
-#[allow(clippy::cognitive_complexity)]
 pub fn cmd(
     log_ctx: crate::common::LogContext,
     args: Args,
@@ -136,11 +47,18 @@ pub fn cmd(
     use licenses::LicenseInfo;
     use std::{collections::BTreeMap, fmt::Write};
 
+    let cfg_path = krate_ctx.get_config_path(args.config.clone());
+
     let mut files = Files::new();
-    let cfg = ValidConfig::load(krate_ctx.get_config_path(args.config), &mut files, log_ctx)?;
+    let ValidConfig { graph, .. } = ValidConfig::load(
+        cfg_path,
+        krate_ctx.get_local_exceptions_path(),
+        &mut files,
+        log_ctx,
+    )?;
 
     let (krates, store) = rayon::join(
-        || krate_ctx.gather_krates(cfg.targets, cfg.exclude),
+        || krate_ctx.gather_krates(graph.targets, graph.exclude),
         crate::common::load_license_store,
     );
 
@@ -155,25 +73,54 @@ pub fn cmd(
 
     let summary = gatherer.gather(&krates, &mut files, None);
 
+    use std::borrow::Cow;
+
+    #[derive(Ord, PartialOrd, PartialEq, Eq)]
+    struct SerKid<'k>(Cow<'k, Kid>);
+
+    impl<'k> serde::Serialize for SerKid<'k> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(&format!(
+                "{} {} {}",
+                self.0.name(),
+                self.0.version(),
+                self.0.source()
+            ))
+        }
+    }
+
+    impl<'k> SerKid<'k> {
+        fn parts(&self) -> (&str, &str) {
+            (self.0.name(), self.0.version())
+        }
+    }
+
     #[derive(Serialize)]
     struct Crate {
         licenses: Vec<String>,
     }
 
     #[derive(Serialize)]
-    struct LicenseLayout<'a> {
-        licenses: Vec<(String, Vec<&'a Kid>)>,
-        unlicensed: Vec<&'a Kid>,
+    struct LicenseLayout<'k> {
+        licenses: Vec<(String, Vec<SerKid<'k>>)>,
+        unlicensed: Vec<SerKid<'k>>,
     }
 
-    struct CrateLayout {
-        crates: BTreeMap<Kid, Crate>,
+    struct CrateLayout<'k> {
+        crates: BTreeMap<SerKid<'k>, Crate>,
     }
 
-    impl CrateLayout {
-        fn search(&self, id: &Kid) -> &Crate {
+    impl<'k> CrateLayout<'k> {
+        fn search(&self, id: &SerKid<'k>) -> &Crate {
             self.crates.get(id).expect("unable to find crate")
         }
+    }
+
+    fn borrow(kid: &Kid) -> SerKid<'_> {
+        SerKid(Cow::Borrowed(kid))
     }
 
     let mut crate_layout = CrateLayout {
@@ -204,10 +151,10 @@ pub fn cmd(
                         }
 
                         match licenses.binary_search_by(|(r, _)| r.cmp(&s)) {
-                            Ok(i) => licenses[i].1.push(&krate_lic_nfo.krate.id),
+                            Ok(i) => licenses[i].1.push(borrow(&krate_lic_nfo.krate.id)),
                             Err(i) => {
                                 let mut v = Vec::with_capacity(20);
-                                v.push(&krate_lic_nfo.krate.id);
+                                v.push(borrow(&krate_lic_nfo.krate.id));
                                 licenses.insert(i, (s.clone(), v));
                             }
                         }
@@ -215,26 +162,19 @@ pub fn cmd(
                     }
                 }
                 LicenseInfo::Unlicensed => {
-                    unlicensed.push(&krate_lic_nfo.krate.id);
+                    unlicensed.push(borrow(&krate_lic_nfo.krate.id));
                 }
             }
 
             crate_layout
                 .crates
-                .insert(krate_lic_nfo.krate.id.clone(), cur);
+                .insert(SerKid(Cow::Owned(krate_lic_nfo.krate.id.clone())), cur);
         }
     }
 
-    fn get_parts(pid: &Kid) -> (&str, &str) {
-        let mut it = pid.repr.split(' ');
-
-        (it.next().unwrap(), it.next().unwrap())
-    }
-
-    fn write_pid(out: &mut String, pid: &Kid) -> Result<(), Error> {
-        let parts = get_parts(pid);
-
-        Ok(write!(out, "{}@{}", parts.0, parts.1)?)
+    fn write_pid(out: &mut String, pid: &SerKid<'_>) -> Result<(), Error> {
+        let (name, version) = pid.parts();
+        Ok(write!(out, "{name}@{version}")?)
     }
 
     match args.format {
@@ -244,19 +184,19 @@ pub fn cmd(
 
             match args.layout {
                 Layout::License => {
-                    for license in license_layout.licenses {
+                    for (license, krates) in license_layout.licenses {
                         if color {
                             write!(
                                 output,
                                 "{} ({}): ",
-                                Color::Cyan.paint(&license.0),
-                                Color::White.bold().paint(license.1.len().to_string())
+                                Color::Cyan.paint(&license),
+                                Color::White.bold().paint(krates.len().to_string())
                             )?;
                         } else {
-                            write!(output, "{} ({}): ", license.0, license.1.len())?;
+                            write!(output, "{license} ({}): ", krates.len())?;
                         }
 
-                        for (i, krate_id) in license.1.iter().enumerate() {
+                        for (i, krate_id) in krates.iter().enumerate() {
                             if i != 0 {
                                 write!(output, ", ")?;
                             }
@@ -269,8 +209,8 @@ pub fn cmd(
                                     Color::White
                                 };
 
-                                let parts = get_parts(krate_id);
-                                write!(output, "{}@{}", color.paint(parts.0), parts.1,)?;
+                                let (name, version) = krate_id.parts();
+                                write!(output, "{}@{version}", color.paint(name))?;
                             } else {
                                 write_pid(&mut output, krate_id)?;
                             }
@@ -306,6 +246,8 @@ pub fn cmd(
                 }
                 Layout::Crate => {
                     for (id, krate) in crate_layout.crates {
+                        let (name, version) = id.parts();
+
                         if color {
                             let color = match krate.licenses.len() {
                                 1 => Color::White,
@@ -313,23 +255,14 @@ pub fn cmd(
                                 _ => Color::Yellow,
                             };
 
-                            let parts = get_parts(&id);
                             write!(
                                 output,
-                                "{}@{} ({}): ",
-                                color.paint(parts.0),
-                                parts.1,
+                                "{}@{version} ({}): ",
+                                color.paint(name),
                                 Color::White.bold().paint(krate.licenses.len().to_string()),
                             )?;
                         } else {
-                            let parts = get_parts(&id);
-                            write!(
-                                output,
-                                "{}@{} ({}): ",
-                                parts.0,
-                                parts.1,
-                                krate.licenses.len(),
-                            )?;
+                            write!(output, "{name}@{version} ({}): ", krate.licenses.len(),)?;
                         }
 
                         for (i, license) in krate.licenses.iter().enumerate() {
@@ -340,7 +273,7 @@ pub fn cmd(
                             if color {
                                 write!(output, "{}", Color::Cyan.paint(license))?;
                             } else {
-                                write!(output, "{}", license)?;
+                                write!(output, "{license}")?;
                             }
                         }
 
@@ -365,8 +298,8 @@ pub fn cmd(
             {
                 write!(output, "crate")?;
 
-                for license in &license_layout.licenses {
-                    write!(output, "\t{}", license.0)?;
+                for (license, _) in &license_layout.licenses {
+                    write!(output, "\t{license}")?;
                 }
 
                 if !license_layout.unlicensed.is_empty() {
@@ -380,7 +313,7 @@ pub fn cmd(
                 write_pid(&mut output, &id)?;
 
                 for lic in &license_layout.licenses {
-                    if lic.1.binary_search(&&id).is_ok() {
+                    if lic.1.binary_search(&id).is_ok() {
                         write!(output, "\tX")?;
                     } else {
                         write!(output, "\t")?;

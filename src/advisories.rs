@@ -6,7 +6,7 @@ use crate::{diag, LintLevel};
 pub use diags::Code;
 pub use helpers::{
     db::{AdvisoryDb, DbSet, Fetch, Id, Report},
-    index::Indices,
+    index::{Entry, Indices},
 };
 
 pub trait AuditReporter {
@@ -71,6 +71,7 @@ pub fn check<R, S>(
 
     use bitvec::prelude::*;
     let mut ignore_hits: BitVec = BitVec::repeat(false, ctx.cfg.ignore.len());
+    let mut ignore_yanked_hits: BitVec = BitVec::repeat(false, ctx.cfg.ignore_yanked.len());
 
     // Emit diagnostics for any advisories found that matched crates in the graph
     for (krate, krate_index, advisory) in &report.advisories {
@@ -98,19 +99,34 @@ pub fn check<R, S>(
                 sink.push(ctx.diag_for_index_failure(krate, ind, e));
             }
         } else {
-            sink.push(ctx.diag_for_yanked(krate, ind));
+            // Check to see if the user has added an ignore for the yanked
+            // crate, eg. see https://github.com/EmbarkStudios/cargo-deny/issues/579
+            // this should be extremely rare and very temporary as in most cases
+            // a new semver compatible version of the yanked version is published
+            // around the same time as a yank occurs
+            if let Some(i) = ctx
+                .cfg
+                .ignore_yanked
+                .iter()
+                .position(|iy| crate::match_krate(krate, &iy.spec))
+            {
+                sink.push(ctx.diag_for_yanked_ignore(krate, i));
+                ignore_yanked_hits.as_mut_bitslice().set(i, true);
+            } else {
+                sink.push(ctx.diag_for_yanked(krate, ind));
+            }
         }
     }
 
-    // Check for advisory identifers that were set to be ignored, but
+    // Check for advisory identifiers that were set to be ignored, but
     // are not actually in any database.
     for ignored in &ctx.cfg.ignore {
-        if !advisory_dbs.has_advisory(&ignored.value) {
+        if !advisory_dbs.has_advisory(&ignored.id.value) {
             sink.push(ctx.diag_for_unknown_advisory(ignored));
         }
     }
 
-    // Check for advisory identifers that were set to be ignored, but
+    // Check for advisory identifiers that were set to be ignored, but
     // were not actually encountered, for cases where a crate, or specific
     // version of that crate, has been removed or replaced and the advisory
     // no longer applies to it, so that users can cleanup their configuration
@@ -120,6 +136,14 @@ pub fn check<R, S>(
         .filter_map(|(hit, ignore)| if !hit { Some(ignore) } else { None })
     {
         sink.push(ctx.diag_for_advisory_not_encountered(ignore));
+    }
+
+    for ignore in ignore_yanked_hits
+        .into_iter()
+        .zip(ctx.cfg.ignore_yanked.iter())
+        .filter_map(|(hit, ignore)| if !hit { Some(ignore) } else { None })
+    {
+        sink.push(ctx.diag_for_ignored_yanked_not_encountered(ignore));
     }
 
     if let Some(mut reporter) = audit_compatible_reporter {

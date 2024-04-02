@@ -10,8 +10,6 @@
 //! requirements that are satisfied by the licenses you choose to use for your
 //! project, and notifies you via warnings or errors if the license requirements
 //! for any crate aren't compatible with your configuration.
-//!
-//!
 
 /// Configuration for license checking
 pub mod cfg;
@@ -26,7 +24,6 @@ use cfg::BlanketAgreement;
 pub use gather::{Gatherer, LicenseInfo, LicenseStore};
 use gather::{KrateLicense, LicenseExprInfo, LicenseExprSource, Summary};
 
-pub use cfg::{Config, ValidConfig};
 pub use diags::Code;
 
 use bitvec::prelude::*;
@@ -37,7 +34,7 @@ struct Hits {
 }
 
 fn evaluate_expression(
-    cfg: &ValidConfig,
+    ctx: &crate::CheckCtx<'_, cfg::ValidConfig>,
     krate_lic_nfo: &KrateLicense<'_>,
     expr: &spdx::Expression,
     nfo: &LicenseExprInfo,
@@ -55,6 +52,7 @@ fn evaluate_expression(
         ExplicitException,
         IsCopyleft,
         Default,
+        NotExplicitlyAllowed,
     }
 
     let mut reasons = smallvec::SmallVec::<[(Reason, bool); 8]>::new();
@@ -75,12 +73,14 @@ fn evaluate_expression(
 
     let mut warnings = 0;
 
+    let cfg = &ctx.cfg;
+
     // Check to see if the crate matches an exception, which is additional to
     // the general allow list
-    let exception_ind = cfg.exceptions.iter().position(|exc| {
-        exc.name.as_ref() == &krate_lic_nfo.krate.name
-            && crate::match_req(&krate_lic_nfo.krate.version, exc.version.as_ref())
-    });
+    let exception_ind = cfg
+        .exceptions
+        .iter()
+        .position(|exc| crate::match_krate(krate_lic_nfo.krate, &exc.spec));
 
     let eval_res = expr.evaluate_with_failures(|req| {
         // 1. Exceptions are additional per-crate licenses that aren't blanket
@@ -89,7 +89,7 @@ fn evaluate_expression(
         if let Some(ind) = exception_ind {
             let exception = &cfg.exceptions[ind];
             for allow in &exception.allowed {
-                if allow.value.satisfies(req) {
+                if allow.0.value.satisfies(req) {
                     // Note that hit the exception
                     hits.exceptions.as_mut_bitslice().set(ind, true);
                     allow!(ExplicitException);
@@ -104,7 +104,7 @@ fn evaluate_expression(
         // banning Apache-2.0, but allowing MIT, will allow the crate
         // to be used as you are upholding at least one license requirement
         for deny in &cfg.denied {
-            if deny.value.satisfies(req) {
+            if deny.0.value.satisfies(req) {
                 deny!(Denied);
             }
         }
@@ -112,88 +112,92 @@ fn evaluate_expression(
         // 3. A license that is specifically allowed will of course mean
         // that the requirement is met.
         for (i, allow) in cfg.allowed.iter().enumerate() {
-            if allow.value.satisfies(req) {
+            if allow.0.value.satisfies(req) {
                 hits.allowed.as_mut_bitslice().set(i, true);
                 allow!(ExplicitAllowance);
             }
         }
 
-        // 4. If the license isn't explicitly allowed, it still may
-        // be allowed by the blanket "OSI Approved" or "FSF Free/Libre"
-        // allowances
-        if let spdx::LicenseItem::Spdx { id, .. } = req.license {
-            if id.is_copyleft() {
-                match cfg.copyleft {
-                    LintLevel::Allow => {
-                        allow!(IsCopyleft);
-                    }
-                    LintLevel::Warn => {
-                        warnings += 1;
-                        allow!(IsCopyleft);
-                    }
-                    LintLevel::Deny => {
-                        deny!(IsCopyleft);
-                    }
-                }
-            }
-
-            match cfg.allow_osi_fsf_free {
-                BlanketAgreement::Neither => {}
-                BlanketAgreement::Either => {
-                    if id.is_osi_approved() {
-                        allow!(IsOsiApproved);
-                    } else if id.is_fsf_free_libre() {
-                        allow!(IsFsfFree);
-                    }
-                }
-                BlanketAgreement::Both => {
-                    if id.is_fsf_free_libre() && id.is_osi_approved() {
-                        allow!(IsBothFreeAndOsi);
-                    }
-                }
-                BlanketAgreement::Osi => {
-                    if id.is_osi_approved() {
-                        allow!(IsOsiApproved);
-                    }
-                }
-                BlanketAgreement::Fsf => {
-                    if id.is_fsf_free_libre() {
-                        allow!(IsFsfFree);
-                    }
-                }
-                BlanketAgreement::OsiOnly => {
-                    if id.is_osi_approved() {
-                        if id.is_fsf_free_libre() {
-                            deny!(IsFsfFree);
-                        } else {
-                            allow!(IsOsiApproved);
+        if let Some(dep_cfg) = &cfg.deprecated {
+            // 4. If the license isn't explicitly allowed, it still may
+            // be allowed by the blanket "OSI Approved" or "FSF Free/Libre"
+            // allowances
+            if let spdx::LicenseItem::Spdx { id, .. } = req.license {
+                if id.is_copyleft() {
+                    match dep_cfg.copyleft {
+                        LintLevel::Allow => {
+                            allow!(IsCopyleft);
+                        }
+                        LintLevel::Warn => {
+                            warnings += 1;
+                            allow!(IsCopyleft);
+                        }
+                        LintLevel::Deny => {
+                            deny!(IsCopyleft);
                         }
                     }
                 }
-                BlanketAgreement::FsfOnly => {
-                    if id.is_fsf_free_libre() {
+
+                match dep_cfg.allow_osi_fsf_free {
+                    BlanketAgreement::Neither => {}
+                    BlanketAgreement::Either => {
                         if id.is_osi_approved() {
-                            deny!(IsOsiApproved);
-                        } else {
+                            allow!(IsOsiApproved);
+                        } else if id.is_fsf_free_libre() {
                             allow!(IsFsfFree);
                         }
                     }
+                    BlanketAgreement::Both => {
+                        if id.is_fsf_free_libre() && id.is_osi_approved() {
+                            allow!(IsBothFreeAndOsi);
+                        }
+                    }
+                    BlanketAgreement::Osi => {
+                        if id.is_osi_approved() {
+                            allow!(IsOsiApproved);
+                        }
+                    }
+                    BlanketAgreement::Fsf => {
+                        if id.is_fsf_free_libre() {
+                            allow!(IsFsfFree);
+                        }
+                    }
+                    BlanketAgreement::OsiOnly => {
+                        if id.is_osi_approved() {
+                            if id.is_fsf_free_libre() {
+                                deny!(IsFsfFree);
+                            } else {
+                                allow!(IsOsiApproved);
+                            }
+                        }
+                    }
+                    BlanketAgreement::FsfOnly => {
+                        if id.is_fsf_free_libre() {
+                            if id.is_osi_approved() {
+                                deny!(IsOsiApproved);
+                            } else {
+                                allow!(IsFsfFree);
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        // 5. Whelp, this license just won't do!
-        match cfg.default {
-            LintLevel::Deny => {
-                deny!(Default);
+            // 5. Whelp, this license just won't do!
+            match dep_cfg.default {
+                LintLevel::Deny => {
+                    deny!(Default);
+                }
+                LintLevel::Warn => {
+                    warnings += 1;
+                    allow!(Default);
+                }
+                LintLevel::Allow => {
+                    allow!(Default);
+                }
             }
-            LintLevel::Warn => {
-                warnings += 1;
-                allow!(Default);
-            }
-            LintLevel::Allow => {
-                allow!(Default);
-            }
+        } else {
+            deny!(NotExplicitlyAllowed);
         }
     });
 
@@ -226,7 +230,45 @@ fn evaluate_expression(
         ),
     );
 
-    for (reason, failed_req) in reasons.into_iter().zip(expr.requirements()) {
+    let mut notes = krate_lic_nfo.notes.clone();
+
+    for ((reason, accepted), failed_req) in reasons.into_iter().zip(expr.requirements()) {
+        if accepted && ctx.log_level < log::LevelFilter::Info {
+            continue;
+        }
+
+        if !accepted && severity == Severity::Error {
+            if let Some(id) = failed_req.req.license.id() {
+                notes.push(format!("{} - {}:", id.name, id.full_name));
+
+                let len = notes.len();
+
+                if id.is_deprecated() {
+                    notes.push("  - **DEPRECATED**".into());
+                }
+
+                if id.is_osi_approved() {
+                    notes.push("  - OSI approved".into());
+                }
+
+                if id.is_fsf_free_libre() {
+                    notes.push("  - FSF Free/Libre".into());
+                }
+
+                if id.is_copyleft() {
+                    notes.push("  - Copyleft".into());
+                }
+
+                if len == notes.len() {
+                    notes.push("  - No additional metadata available for license".into());
+                }
+            } else {
+                // This would only happen if askalono used a newer license list than spdx, but we update
+                // both simultaneously
+                notes.push(format!("{} is not an SPDX license", failed_req.req));
+            }
+        }
+
         labels.push(
             Label::primary(
                 nfo.file_id,
@@ -235,8 +277,8 @@ fn evaluate_expression(
             )
             .with_message(format!(
                 "{}: {}",
-                if reason.1 { "accepted" } else { "rejected" },
-                match reason.0 {
+                if accepted { "accepted" } else { "rejected" },
+                match reason {
                     Reason::Denied => "explicitly denied",
                     Reason::IsFsfFree =>
                         "license is FSF approved https://www.gnu.org/licenses/license-list.en.html",
@@ -244,10 +286,15 @@ fn evaluate_expression(
                         "license is OSI approved https://opensource.org/licenses",
                     Reason::ExplicitAllowance => "license is explicitly allowed",
                     Reason::ExplicitException => "license is explicitly allowed via an exception",
+                    Reason::NotExplicitlyAllowed => "license was not explicitly allowed",
                     Reason::IsBothFreeAndOsi => "license is FSF AND OSI approved",
                     Reason::IsCopyleft => "license is considered copyleft",
                     Reason::Default => {
-                        match cfg.default {
+                        match cfg
+                            .deprecated
+                            .as_ref()
+                            .map_or(LintLevel::Deny, |d| d.default)
+                        {
                             LintLevel::Deny => "not explicitly allowed",
                             LintLevel::Warn => "warned by default",
                             LintLevel::Allow => "allowed by default",
@@ -266,10 +313,11 @@ fn evaluate_expression(
             diags::Code::Rejected
         })
         .with_labels(labels)
+        .with_notes(notes)
 }
 
 pub fn check(
-    ctx: crate::CheckCtx<'_, ValidConfig>,
+    ctx: crate::CheckCtx<'_, cfg::ValidConfig>,
     summary: Summary<'_>,
     mut sink: crate::diag::ErrorSink,
 ) {
@@ -310,7 +358,7 @@ pub fn check(
         match &krate_lic_nfo.lic_info {
             LicenseInfo::SpdxExpression { expr, nfo } => {
                 pack.push(evaluate_expression(
-                    &ctx.cfg,
+                    &ctx,
                     &krate_lic_nfo,
                     expr,
                     nfo,
@@ -318,7 +366,12 @@ pub fn check(
                 ));
             }
             LicenseInfo::Unlicensed => {
-                let severity = match ctx.cfg.unlicensed {
+                let severity = match ctx
+                    .cfg
+                    .deprecated
+                    .as_ref()
+                    .map_or(LintLevel::Deny, |d| d.unlicensed)
+                {
                     LintLevel::Allow => Severity::Note,
                     LintLevel::Warn => Severity::Warning,
                     LintLevel::Deny => Severity::Error,
@@ -356,7 +409,7 @@ pub fn check(
             pack.push(diags::UnmatchedLicenseException {
                 license_exc_cfg: CfgCoord {
                     file: exc.file_id,
-                    span: exc.name.span,
+                    span: exc.spec.name.span,
                 },
             });
         }
@@ -381,7 +434,7 @@ pub fn check(
                 severity: ctx.cfg.unused_allowed_license.into(),
                 allowed_license_cfg: CfgCoord {
                     file: ctx.cfg.file_id,
-                    span: allowed.span,
+                    span: allowed.0.span,
                 },
             });
         }

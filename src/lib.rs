@@ -6,24 +6,31 @@ use url::Url;
 
 pub mod advisories;
 pub mod bans;
-mod cfg;
+pub mod cfg;
 pub mod diag;
 /// Configuration and logic for checking crate licenses
 pub mod licenses;
+pub mod root_cfg;
 pub mod sources;
 
 #[doc(hidden)]
 pub mod test_utils;
 
 pub use camino::{Utf8Path as Path, Utf8PathBuf as PathBuf};
-pub use cfg::{Spanned, UnvalidatedConfig};
+pub use cfg::UnvalidatedConfig;
 use krates::cm;
 pub use krates::{DepKind, Kid};
+pub use toml_span::{
+    span::{Span, Spanned},
+    Deserialize, Error,
+};
 
 /// The possible lint levels for the various lints. These function similarly
 /// to the standard [Rust lint levels](https://doc.rust-lang.org/rustc/lints/levels.html)
-#[derive(serde::Deserialize, PartialEq, Eq, Clone, Copy, Debug, Default)]
-#[serde(rename_all = "snake_case")]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default, strum::VariantNames, strum::VariantArray)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, serde(rename_all = "kebab-case"))]
+#[strum(serialize_all = "kebab-case")]
 pub enum LintLevel {
     /// A debug or info diagnostic _may_ be emitted if the lint is violated
     Allow,
@@ -36,17 +43,37 @@ pub enum LintLevel {
     Deny,
 }
 
-const fn lint_allow() -> LintLevel {
-    LintLevel::Allow
+#[macro_export]
+macro_rules! enum_deser {
+    ($enum:ty) => {
+        impl<'de> toml_span::Deserialize<'de> for $enum {
+            fn deserialize(
+                value: &mut toml_span::value::Value<'de>,
+            ) -> Result<Self, toml_span::DeserError> {
+                let s = value.take_string(Some(stringify!($enum)))?;
+
+                use strum::{VariantArray, VariantNames};
+
+                let Some(pos) = <$enum as VariantNames>::VARIANTS
+                    .iter()
+                    .position(|v| *v == s.as_ref())
+                else {
+                    return Err(toml_span::Error::from((
+                        toml_span::ErrorKind::UnexpectedValue {
+                            expected: <$enum as VariantNames>::VARIANTS,
+                        },
+                        value.span,
+                    ))
+                    .into());
+                };
+
+                Ok(<$enum as VariantArray>::VARIANTS[pos])
+            }
+        }
+    };
 }
 
-const fn lint_warn() -> LintLevel {
-    LintLevel::Warn
-}
-
-const fn lint_deny() -> LintLevel {
-    LintLevel::Deny
-}
+enum_deser!(LintLevel);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
@@ -62,7 +89,10 @@ pub enum Source {
 
 /// The directory name under which crates sourced from the crates.io sparse
 /// registry are placed
+#[cfg(target_endian = "little")]
 const CRATES_IO_SPARSE_DIR: &str = "index.crates.io-6f17d22bba15001f";
+#[cfg(target_endian = "big")]
+const CRATES_IO_SPARSE_DIR: &str = "index.crates.io-d11c229612889eed";
 
 impl Source {
     pub fn crates_io(is_sparse: bool) -> Self {
@@ -221,9 +251,7 @@ impl Default for Krate {
             name: "".to_owned(),
             version: Version::new(0, 1, 0),
             authors: Vec::new(),
-            id: Kid {
-                repr: "".to_owned(),
-            },
+            id: Kid::default(),
             source: None,
             description: None,
             deps: Vec::new(),
@@ -289,7 +317,7 @@ impl From<cm::Package> for Krate {
 
         Self {
             name: pkg.name,
-            id: pkg.id,
+            id: pkg.id.into(),
             version: pkg.version,
             authors: pkg.authors,
             repository: pkg.repository,
@@ -417,6 +445,9 @@ pub struct CheckCtx<'ctx, T> {
     pub serialize_extra: bool,
     /// Allows for ANSI colorization of diagnostic content
     pub colorize: bool,
+    /// Log level specified by the user, may be used by checks to determine what
+    /// information to emit in diagnostics
+    pub log_level: log::LevelFilter,
 }
 
 /// Checks if a version satisfies the specifies the specified version requirement.
@@ -426,7 +457,12 @@ pub fn match_req(version: &Version, req: Option<&semver::VersionReq>) -> bool {
     req.map_or(true, |req| req.matches(version))
 }
 
-use sources::GitSpec;
+#[inline]
+pub fn match_krate(krate: &Krate, pid: &cfg::PackageSpec) -> bool {
+    krate.name == pid.name.value && match_req(&krate.version, pid.version_req.as_ref())
+}
+
+use sources::cfg::GitSpec;
 
 #[inline]
 pub(crate) fn normalize_git_url(url: &mut Url) -> GitSpec {
@@ -505,16 +541,21 @@ pub fn krates_with_index(
         .context("unable to determine crates.io url")?;
 
     let index = tame_index::index::ComboIndexCache::new(
-        tame_index::IndexLocation::new(crates_io).with_root(cargo_home),
+        tame_index::IndexLocation::new(crates_io).with_root(cargo_home.clone()),
     )
     .context("unable to open local crates.io index")?;
+
+    // Note we don't take a lock here ourselves, since we are calling cargo
+    // it will take the lock and only give us results if it gets access, if we
+    // took a look we would deadlock here
+    let lock = tame_index::utils::flock::FileLock::unlocked();
 
     let index_cache_build = move |krates: std::collections::BTreeSet<String>| {
         let mut cache = std::collections::BTreeMap::new();
         for name in krates {
             let read = || -> Option<krates::index::IndexKrate> {
                 let name = name.as_str().try_into().ok()?;
-                let krate = index.cached_krate(name).ok()??;
+                let krate = index.cached_krate(name, &lock).ok()??;
                 let versions = krate
                     .versions
                     .into_iter()
